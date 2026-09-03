@@ -75,6 +75,7 @@ type Notice = { tone: 'success' | 'error' | 'info'; text: string } | null;
 const DURATION = 5554;
 const FALLBACK_TITLE = 'Episódio importado';
 const STORAGE_KEY = 'cortae-podcast-studio-v1';
+const PODCAST_API_ORIGIN = 'https://cortae-podcast.ymnrdh7nbd.chatgpt.site';
 const bars = Array.from(
   { length: 132 },
   (_, i) => 16 + ((i * 31 + i * i * 7) % 72),
@@ -251,7 +252,12 @@ async function createDefaultCoverFile() {
 }
 
 async function apiJson<T>(endpoint: string, init?: RequestInit) {
-  const response = await fetch(endpoint, init);
+  const origin =
+    typeof window !== 'undefined' &&
+    window.location.hostname.endsWith('github.io')
+      ? PODCAST_API_ORIGIN
+      : window.location.origin;
+  const response = await fetch(new URL(endpoint, origin), init);
   const payload: unknown = await response.json().catch(() => null);
   if (!response.ok) {
     const message =
@@ -470,7 +476,12 @@ export default function Home() {
     () =>
       typeof window === 'undefined'
         ? feedUrl(program)
-        : new URL(feedUrl(program), window.location.origin).toString(),
+        : new URL(
+            feedUrl(program),
+            window.location.hostname.endsWith('github.io')
+              ? PODCAST_API_ORIGIN
+              : window.location.origin,
+          ).toString(),
     [program],
   );
   const publicEpisodes = episode?.status === 'published' ? 1 : 0;
