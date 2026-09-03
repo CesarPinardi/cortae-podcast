@@ -560,21 +560,17 @@ export default function Home() {
   useEffect(() => {
     if (!episode || episode.status !== 'scheduled' || !episode.publishAt)
       return;
-    const publish = () =>
-      setEpisode((current) =>
-        current && current.status === 'scheduled'
-          ? {
-              ...current,
-              status: 'published',
-              publishedAt: new Date().toISOString(),
-            }
-          : current,
-      );
-    const timer = window.setInterval(() => {
-      if (new Date(episode.publishAt).getTime() <= Date.now()) publish();
-    }, 30_000);
-    if (new Date(episode.publishAt).getTime() <= Date.now())
-      window.setTimeout(publish, 0);
+    const refreshStatus = async () => {
+      if (new Date(episode.publishAt).getTime() > Date.now()) return;
+      try {
+        const current = await apiJson<Episode>(`/api/episodes/${episode.guid}`);
+        if (current.status === 'published') setEpisode(current);
+      } catch {
+        // The next poll retries while the server-side scheduler catches up.
+      }
+    };
+    const timer = window.setInterval(refreshStatus, 30_000);
+    void refreshStatus();
     return () => window.clearInterval(timer);
   }, [episode]);
 

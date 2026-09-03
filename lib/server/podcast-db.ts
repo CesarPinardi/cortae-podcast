@@ -71,6 +71,7 @@ export function programFromRow(
     coverUrl: '',
     coverKey: row.cover_key,
     slug: row.slug,
+    updatedAt: row.updated_at,
   };
 }
 
@@ -97,7 +98,44 @@ export function episodeFromRow(
     programId: row.program_id,
     sourceUrl: row.source_url,
     audioKey: row.audio_key,
+    updatedAt: row.updated_at,
   };
+}
+
+type PodcastBindings = { DB: D1Database; MEDIA: R2Bucket };
+
+export async function publishDueEpisodes(
+  bindings: PodcastBindings = { DB: database(), MEDIA: media() },
+  now = new Date().toISOString(),
+) {
+  const due = await bindings.DB.prepare(
+    `SELECT * FROM episodes
+       WHERE status='scheduled' AND publish_at IS NOT NULL AND publish_at <= ?1`,
+  )
+    .bind(now)
+    .all<EpisodeRow>();
+  let published = 0;
+  for (const row of due.results) {
+    const program = await bindings.DB.prepare(
+      'SELECT * FROM programs WHERE id = ?1',
+    )
+      .bind(row.program_id)
+      .first<ProgramRow>();
+    const [audio, cover] = await Promise.all([
+      bindings.MEDIA.head(row.audio_key),
+      program ? bindings.MEDIA.head(program.cover_key) : null,
+    ]);
+    if (!program || !audio || audio.size !== row.size_bytes || !cover) continue;
+    const result = await bindings.DB.prepare(
+      `UPDATE episodes SET status='published', published_at=publish_at,
+         publish_at=NULL, updated_at=?1
+         WHERE guid=?2 AND status='scheduled' AND publish_at IS NOT NULL AND publish_at <= ?3`,
+    )
+      .bind(now, row.guid, now)
+      .run();
+    published += result.meta.changes;
+  }
+  return published;
 }
 
 export async function findProgram(slug: string) {

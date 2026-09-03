@@ -11,6 +11,11 @@ export async function POST(
   const { guid } = await Promise.resolve(context.params);
   const episode = await findEpisode(guid);
   if (!episode) return error('Episódio não encontrado.', 404);
+  if (episode.status === 'published')
+    return error(
+      'O áudio já publicado não pode ser substituído. Crie uma nova versão do episódio.',
+      409,
+    );
   const contentType = request.headers.get('content-type')?.split(';')[0] ?? '';
   if (!contentType.startsWith('audio/'))
     return error('Envie um arquivo de áudio com Content-Type audio/*.', 415);

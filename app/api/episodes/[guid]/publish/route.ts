@@ -32,11 +32,25 @@ export async function POST(
   if (errors.length)
     return error('Publicação bloqueada até corrigir os dados.', 422, errors);
   const now = new Date().toISOString();
-  await env.DB.prepare(
-    `UPDATE episodes SET status='published', publish_at=NULL, published_at=?1, updated_at=?1 WHERE guid=?2 AND status <> 'published'`,
+  const result = await env.DB.prepare(
+    `UPDATE episodes SET status='published', publish_at=NULL, published_at=?1, updated_at=?1
+     WHERE guid=?2 AND status IN ('draft', 'ready', 'scheduled') AND audio_key=?3 AND size_bytes=?4`,
   )
-    .bind(now, guid)
+    .bind(now, guid, episode.audioKey, episode.sizeBytes)
     .run();
+  if (!result.meta.changes) {
+    const latest = await findEpisode(guid);
+    if (latest?.status === 'published' && latest.publishedAt)
+      return json({
+        guid,
+        status: 'published',
+        publishedAt: latest.publishedAt,
+      });
+    return error(
+      'O episódio mudou durante a publicação. Tente novamente.',
+      409,
+    );
+  }
   return json({
     guid,
     status: 'published',

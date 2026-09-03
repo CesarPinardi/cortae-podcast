@@ -11,6 +11,7 @@ export async function POST(
   if (!episode) return error('Episódio não encontrado.', 404);
   if (
     !episode.publishAt ||
+    !hasTimezone(episode.publishAt) ||
     Number.isNaN(Date.parse(episode.publishAt)) ||
     Date.parse(episode.publishAt) <= Date.now()
   )
@@ -22,6 +23,10 @@ export async function POST(
     .bind(now, guid)
     .run();
   return json({ guid, status: 'scheduled', publishAt: episode.publishAt });
+}
+
+function hasTimezone(value: string) {
+  return /(?:Z|[+-]\d{2}:?\d{2})$/i.test(value);
 }
 
 export async function DELETE(

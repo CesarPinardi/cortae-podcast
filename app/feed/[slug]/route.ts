@@ -1,6 +1,10 @@
 import { escapeXml, formatDuration, formatRfc2822 } from '@/lib/podcast';
 import { absoluteUrl } from '@/lib/server/http';
-import { findPublishedEpisodes, findProgram } from '@/lib/server/podcast-db';
+import {
+  findPublishedEpisodes,
+  findProgram,
+  publishDueEpisodes,
+} from '@/lib/server/podcast-db';
 
 function feedXml(
   request: Request,
@@ -26,6 +30,7 @@ export async function GET(
   const { slug } = await Promise.resolve(context.params);
   const program = await findProgram(slug);
   if (!program) return new Response('Feed não encontrado.', { status: 404 });
+  await publishDueEpisodes();
   const episodes = await findPublishedEpisodes(
     program.id,
     new Date().toISOString(),
@@ -36,15 +41,31 @@ export async function GET(
     new TextEncoder().encode(xml),
   );
   const etag = `"${Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, '0')).join('')}"`;
-  if (request.headers.get('if-none-match') === etag)
-    return new Response(null, { status: 304, headers: { etag } });
+  const lastModifiedValue = [
+    program.updatedAt ?? '',
+    ...episodes.map((episode) => episode.updatedAt ?? episode.publishedAt),
+  ]
+    .filter(Boolean)
+    .sort()
+    .at(-1);
+  const lastModified = new Date(lastModifiedValue ?? new Date().toISOString());
+  const cacheHeaders = {
+    'cache-control':
+      'public, max-age=60, s-maxage=300, stale-while-revalidate=86400',
+    etag,
+    'last-modified': lastModified.toUTCString(),
+  };
+  if (
+    request.headers.get('if-none-match') === etag ||
+    (!request.headers.has('if-none-match') &&
+      Date.parse(request.headers.get('if-modified-since') ?? '') >=
+        Math.floor(lastModified.getTime() / 1000) * 1000)
+  )
+    return new Response(null, { status: 304, headers: cacheHeaders });
   return new Response(xml, {
     headers: {
-      'cache-control':
-        'public, max-age=60, s-maxage=300, stale-while-revalidate=86400',
+      ...cacheHeaders,
       'content-type': 'application/rss+xml; charset=utf-8',
-      etag,
-      'last-modified': new Date().toUTCString(),
     },
   });
 }

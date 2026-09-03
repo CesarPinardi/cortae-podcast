@@ -26,6 +26,7 @@ export type Program = {
   coverUrl: string;
   slug: string;
   coverKey?: string;
+  updatedAt?: string;
 };
 
 export type Episode = {
@@ -48,6 +49,7 @@ export type Episode = {
   programId?: string;
   sourceUrl?: string;
   audioKey?: string;
+  updatedAt?: string;
 };
 
 export type Destination = {
