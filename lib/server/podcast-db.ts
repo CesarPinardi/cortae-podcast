@@ -110,7 +110,8 @@ export async function publishDueEpisodes(
 ) {
   const due = await bindings.DB.prepare(
     `SELECT * FROM episodes
-       WHERE status='scheduled' AND publish_at IS NOT NULL AND publish_at <= ?1`,
+       WHERE status='scheduled' AND publish_at IS NOT NULL
+       AND julianday(publish_at) <= julianday(?1)`,
   )
     .bind(now)
     .all<EpisodeRow>();
@@ -129,9 +130,11 @@ export async function publishDueEpisodes(
     const result = await bindings.DB.prepare(
       `UPDATE episodes SET status='published', published_at=publish_at,
          publish_at=NULL, updated_at=?1
-         WHERE guid=?2 AND status='scheduled' AND publish_at IS NOT NULL AND publish_at <= ?3`,
+         WHERE guid=?2 AND status='scheduled' AND publish_at IS NOT NULL
+           AND julianday(publish_at) <= julianday(?3)
+           AND audio_key=?4 AND size_bytes=?5`,
     )
-      .bind(now, row.guid, now)
+      .bind(now, row.guid, now, row.audio_key, row.size_bytes)
       .run();
     published += result.meta.changes;
   }
@@ -167,8 +170,8 @@ export async function findPublishedEpisodes(programId: string, now: string) {
     .prepare(
       `SELECT * FROM episodes
        WHERE program_id = ?1 AND status = 'published'
-       AND published_at IS NOT NULL AND published_at <= ?2
-       ORDER BY published_at DESC`,
+       AND published_at IS NOT NULL AND julianday(published_at) <= julianday(?2)
+       ORDER BY julianday(published_at) DESC`,
     )
     .bind(programId, now)
     .all<EpisodeRow>();

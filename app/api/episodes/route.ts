@@ -7,6 +7,7 @@ import {
   safeSegment,
   stringField,
   isValidTimezone,
+  toUtcIso,
 } from '@/lib/server/http';
 import { findProgramById } from '@/lib/server/podcast-db';
 
@@ -39,6 +40,7 @@ export async function POST(request: Request) {
   const duration = Number(body.duration);
   const status = (stringField(body, 'status') || 'processing') as EpisodeStatus;
   const publishAt = stringField(body, 'publishAt') || null;
+  const publishAtUtc = publishAt ? toUtcIso(publishAt) : null;
   const errors: string[] = [];
   const program = programId ? await findProgramById(programId) : null;
   if (!program) errors.push('Programa não encontrado.');
@@ -51,8 +53,7 @@ export async function POST(request: Request) {
   if (!statuses.has(status) || status === 'published')
     errors.push('Estado inicial de episódio inválido.');
   if (!isValidTimezone(timezone)) errors.push('Fuso horário inválido.');
-  if (publishAt && Number.isNaN(Date.parse(publishAt)))
-    errors.push('Data de publicação inválida.');
+  if (publishAt && !publishAtUtc) errors.push('Data de publicação inválida.');
   if (!Number.isInteger(sizeBytes) || sizeBytes <= 0)
     errors.push('Informe o tamanho do áudio em bytes.');
   if (!Number.isInteger(duration) || duration <= 0)
@@ -86,7 +87,7 @@ export async function POST(request: Request) {
       kind,
       stringField(body, 'season') || null,
       stringField(body, 'number') || null,
-      publishAt,
+      publishAtUtc,
       timezone,
       now,
     )

@@ -683,6 +683,7 @@ export default function Home() {
       const uploaded = await apiJson<{
         sizeBytes: number;
         mimeType: string;
+        audioKey: string;
         mediaPath: string;
       }>(`/api/episodes/${hosted.guid}/audio`, {
         method: 'POST',
@@ -693,7 +694,7 @@ export default function Home() {
         ...hosted,
         sizeBytes: uploaded.sizeBytes,
         mimeType: uploaded.mimeType,
-        audioKey: hosted.audioKey,
+        audioKey: uploaded.audioKey,
         enclosureUrl: uploaded.mediaPath,
       };
       setAudioFile(null);

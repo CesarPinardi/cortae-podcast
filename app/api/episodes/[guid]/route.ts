@@ -6,6 +6,7 @@ import {
   parseJsonBody,
   stringField,
   isValidTimezone,
+  toUtcIso,
 } from '@/lib/server/http';
 import { findEpisode } from '@/lib/server/podcast-db';
 
@@ -43,7 +44,8 @@ export async function PATCH(
   if (!isValidTimezone(timezone)) return error('Fuso horário inválido.', 422);
   if (!editableStatuses.has(status))
     return error('Estado não pode ser alterado por esta operação.', 422);
-  if (publishAt && Number.isNaN(Date.parse(publishAt)))
+  const publishAtUtc = publishAt ? toUtcIso(publishAt) : null;
+  if (publishAt && !publishAtUtc)
     return error('Data de publicação inválida.', 422);
   const now = new Date().toISOString();
   await env.DB.prepare(
@@ -63,7 +65,7 @@ export async function PATCH(
       kind,
       stringField(body, 'season') || current.season || null,
       stringField(body, 'number') || current.number || null,
-      publishAt,
+      publishAtUtc,
       timezone,
       status,
       now,

@@ -1,5 +1,5 @@
 import { env } from 'cloudflare:workers';
-import { error, json } from '@/lib/server/http';
+import { error, json, toUtcIso } from '@/lib/server/http';
 import { findEpisode } from '@/lib/server/podcast-db';
 
 export async function POST(
@@ -9,24 +9,16 @@ export async function POST(
   const { guid } = await Promise.resolve(context.params);
   const episode = await findEpisode(guid);
   if (!episode) return error('Episódio não encontrado.', 404);
-  if (
-    !episode.publishAt ||
-    !hasTimezone(episode.publishAt) ||
-    Number.isNaN(Date.parse(episode.publishAt)) ||
-    Date.parse(episode.publishAt) <= Date.now()
-  )
+  const publishAtUtc = episode.publishAt ? toUtcIso(episode.publishAt) : null;
+  if (!publishAtUtc || Date.parse(publishAtUtc) <= Date.now())
     return error('Escolha uma data futura válida.', 422);
   const now = new Date().toISOString();
   await env.DB.prepare(
-    `UPDATE episodes SET status='scheduled', updated_at=?1 WHERE guid=?2 AND status <> 'published'`,
+    `UPDATE episodes SET status='scheduled', publish_at=?1, updated_at=?2 WHERE guid=?3 AND status <> 'published'`,
   )
-    .bind(now, guid)
+    .bind(publishAtUtc, now, guid)
     .run();
-  return json({ guid, status: 'scheduled', publishAt: episode.publishAt });
-}
-
-function hasTimezone(value: string) {
-  return /(?:Z|[+-]\d{2}:?\d{2})$/i.test(value);
+  return json({ guid, status: 'scheduled', publishAt: publishAtUtc });
 }
 
 export async function DELETE(

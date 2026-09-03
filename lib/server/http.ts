@@ -30,6 +30,12 @@ export function isValidTimezone(value: string) {
   }
 }
 
+export function toUtcIso(value: string) {
+  if (!/(?:Z|[+-]\d{2}:?\d{2})$/i.test(value)) return null;
+  const timestamp = Date.parse(value);
+  return Number.isNaN(timestamp) ? null : new Date(timestamp).toISOString();
+}
+
 export function safeSegment(value: string) {
   return (
     value

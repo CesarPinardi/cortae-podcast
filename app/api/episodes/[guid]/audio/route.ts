@@ -1,5 +1,5 @@
 import { env } from 'cloudflare:workers';
-import { error, json } from '@/lib/server/http';
+import { error, json, safeSegment } from '@/lib/server/http';
 import { findEpisode } from '@/lib/server/podcast-db';
 
 const MAX_AUDIO_BYTES = 1_000_000_000;
@@ -23,23 +23,36 @@ export async function POST(
   if (Number.isFinite(contentLength) && contentLength > MAX_AUDIO_BYTES)
     return error('O áudio excede o limite de 1 GB.', 413);
   if (!request.body) return error('O corpo do upload está vazio.', 400);
-  const object = await env.MEDIA.put(episode.audioKey, request.body, {
+  const audioKey = `audio/${episode.programId}/${guid}/${crypto.randomUUID()}-${safeSegment(episode.audioName)}`;
+  const object = await env.MEDIA.put(audioKey, request.body, {
     httpMetadata: {
       contentType,
       cacheControl: 'public, max-age=31536000, immutable',
     },
   });
   const now = new Date().toISOString();
-  await env.DB.prepare(
-    'UPDATE episodes SET mime_type=?1, size_bytes=?2, status=?3, updated_at=?4 WHERE guid=?5',
+  const result = await env.DB.prepare(
+    `UPDATE episodes SET audio_key=?1, mime_type=?2, size_bytes=?3, status=?4, updated_at=?5
+     WHERE guid=?6 AND status <> 'published' AND audio_key=?7`,
   )
-    .bind(contentType, object.size, 'ready', now, guid)
+    .bind(
+      audioKey,
+      contentType,
+      object.size,
+      'ready',
+      now,
+      guid,
+      episode.audioKey,
+    )
     .run();
+  if (!result.meta.changes)
+    return error('O episódio mudou durante o upload. Tente novamente.', 409);
   return json({
     guid,
     status: 'ready',
     sizeBytes: object.size,
     mimeType: contentType,
-    mediaPath: `/media/${episode.audioKey}`,
+    audioKey,
+    mediaPath: `/media/${audioKey}`,
   });
 }
