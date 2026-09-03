@@ -33,10 +33,14 @@ async function respond(
   if (!key || key.includes('..')) return error('Mídia não encontrada.', 404);
   const [episode, program] = await Promise.all([
     env.DB.prepare(
-      `SELECT guid, audio_key, mime_type, status FROM episodes WHERE audio_key = ?1 AND status = 'published'`,
+      `SELECT guid, audio_key, audio_etag, mime_type, status FROM episodes WHERE audio_key = ?1 AND status = 'published'`,
     )
       .bind(key)
-      .first<{ audio_key: string; mime_type: string }>(),
+      .first<{
+        audio_key: string;
+        audio_etag: string | null;
+        mime_type: string;
+      }>(),
     env.DB.prepare(
       'SELECT cover_key, cover_content_type FROM programs WHERE cover_key = ?1',
     )
@@ -46,6 +50,8 @@ async function respond(
   if (!episode && !program) return error('Mídia não encontrada.', 404);
   const object = await env.MEDIA.head(key);
   if (!object) return error('Mídia não encontrada.', 404);
+  if (episode?.audio_etag && episode.audio_etag !== object.httpEtag)
+    return error('A mídia publicada está inconsistente.', 409);
   const contentType =
     episode?.mime_type ??
     program?.cover_content_type ??

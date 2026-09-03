@@ -22,7 +22,11 @@ export async function POST(
   ]);
   const errors: string[] = [];
   if (!program) errors.push('Programa não encontrado.');
-  if (!audio || audio.size !== episode.sizeBytes)
+  if (
+    !audio ||
+    audio.size !== episode.sizeBytes ||
+    (episode.audioEtag && audio.httpEtag !== episode.audioEtag)
+  )
     errors.push('O áudio publicado não está disponível ou mudou de tamanho.');
   if (!cover) errors.push('A capa do programa não está disponível.');
   if (episode.title.length < 2)

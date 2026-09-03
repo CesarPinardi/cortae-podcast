@@ -32,11 +32,12 @@ export async function POST(
   });
   const now = new Date().toISOString();
   const result = await env.DB.prepare(
-    `UPDATE episodes SET audio_key=?1, mime_type=?2, size_bytes=?3, status=?4, updated_at=?5
-     WHERE guid=?6 AND status <> 'published' AND audio_key=?7`,
+    `UPDATE episodes SET audio_key=?1, audio_etag=?2, mime_type=?3, size_bytes=?4, status=?5, updated_at=?6
+     WHERE guid=?7 AND status <> 'published' AND audio_key=?8`,
   )
     .bind(
       audioKey,
+      object.httpEtag,
       contentType,
       object.size,
       'ready',
@@ -45,8 +46,10 @@ export async function POST(
       episode.audioKey,
     )
     .run();
-  if (!result.meta.changes)
+  if (!result.meta.changes) {
+    await env.MEDIA.delete(audioKey);
     return error('O episódio mudou durante o upload. Tente novamente.', 409);
+  }
   return json({
     guid,
     status: 'ready',

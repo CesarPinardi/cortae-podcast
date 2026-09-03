@@ -49,6 +49,7 @@ export type Episode = {
   programId?: string;
   sourceUrl?: string;
   audioKey?: string;
+  audioEtag?: string;
   updatedAt?: string;
 };
 

@@ -25,6 +25,7 @@ type EpisodeRow = {
   description: string;
   status: Episode['status'];
   audio_key: string;
+  audio_etag: string | null;
   audio_name: string;
   mime_type: string;
   size_bytes: number;
@@ -98,6 +99,7 @@ export function episodeFromRow(
     programId: row.program_id,
     sourceUrl: row.source_url,
     audioKey: row.audio_key,
+    audioEtag: row.audio_etag ?? undefined,
     updatedAt: row.updated_at,
   };
 }
@@ -126,7 +128,14 @@ export async function publishDueEpisodes(
       bindings.MEDIA.head(row.audio_key),
       program ? bindings.MEDIA.head(program.cover_key) : null,
     ]);
-    if (!program || !audio || audio.size !== row.size_bytes || !cover) continue;
+    if (
+      !program ||
+      !audio ||
+      audio.size !== row.size_bytes ||
+      (row.audio_etag && audio.httpEtag !== row.audio_etag) ||
+      !cover
+    )
+      continue;
     const result = await bindings.DB.prepare(
       `UPDATE episodes SET status='published', published_at=publish_at,
          publish_at=NULL, updated_at=?1
