@@ -41,6 +41,45 @@ function parseTime(value: string, fallback: number) {
   return Math.max(0, Math.min(DURATION, seconds));
 }
 
+function TimeField({
+  label,
+  ariaLabel,
+  seconds,
+  onCommit,
+}: {
+  label: string;
+  ariaLabel: string;
+  seconds: number;
+  onCommit: (seconds: number) => void;
+}) {
+  const [draft, setDraft] = useState(formatTime(seconds));
+
+  useEffect(() => {
+    setDraft(formatTime(seconds));
+  }, [seconds]);
+
+  function commit() {
+    const next = parseTime(draft, seconds);
+    setDraft(formatTime(next));
+    onCommit(next);
+  }
+
+  return (
+    <label className="time-field">
+      <span>{label}</span>
+      <Input
+        aria-label={ariaLabel}
+        onBlur={commit}
+        onChange={(event) => setDraft(event.target.value)}
+        onKeyDown={(event) => {
+          if (event.key === 'Enter') event.currentTarget.blur();
+        }}
+        value={draft}
+      />
+    </label>
+  );
+}
+
 function Header({ compact = false, onHome }: { compact?: boolean; onHome?: () => void }) {
   return (
     <header className="mx-auto flex h-20 max-w-[1480px] items-center justify-between px-5 md:px-10">
@@ -208,8 +247,22 @@ export default function Home() {
             </div>
 
             <div className="mt-6 grid gap-4 sm:grid-cols-2">
-              <label className="time-field"><span>Começa em</span><Input aria-label="Tempo de início" value={formatTime(trim[0])} onChange={(event) => setTrim([parseTime(event.target.value, trim[0]), trim[1]])} onBlur={() => setPosition(trim[0])} /></label>
-              <label className="time-field"><span>Termina em</span><Input aria-label="Tempo final" value={formatTime(trim[1])} onChange={(event) => setTrim([trim[0], parseTime(event.target.value, trim[1])])} /></label>
+              <TimeField
+                label="Começa em"
+                ariaLabel="Tempo de início"
+                seconds={trim[0]}
+                onCommit={(seconds) => {
+                  const start = Math.min(seconds, trim[1] - 1);
+                  setTrim([start, trim[1]]);
+                  setPosition(start);
+                }}
+              />
+              <TimeField
+                label="Termina em"
+                ariaLabel="Tempo final"
+                seconds={trim[1]}
+                onCommit={(seconds) => setTrim([trim[0], Math.max(trim[0] + 1, seconds)])}
+              />
             </div>
             <div className="mt-5 flex flex-col gap-3 rounded-2xl border border-primary/20 bg-primary/[.06] p-4 text-sm sm:flex-row sm:items-center"><Info className="size-4 shrink-0 text-primary" /><p className="text-muted-foreground"><strong className="text-foreground">Corte atual:</strong> {formatTime(trim[0])} no início e {formatTime(DURATION - trim[1])} no final.</p><span className="sm:ml-auto whitespace-nowrap font-mono text-xs text-primary">{formatTime(cutDuration)} finais</span></div>
           </section>
