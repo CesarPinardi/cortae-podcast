@@ -13,6 +13,7 @@ export type DestinationStatus =
   | 'problem';
 
 export type Program = {
+  id?: string;
   title: string;
   description: string;
   author: string;
@@ -24,6 +25,7 @@ export type Program = {
   coverValid: boolean;
   coverUrl: string;
   slug: string;
+  coverKey?: string;
 };
 
 export type Episode = {
@@ -43,6 +45,9 @@ export type Episode = {
   sizeBytes: number;
   duration: number;
   enclosureUrl: string;
+  programId?: string;
+  sourceUrl?: string;
+  audioKey?: string;
 };
 
 export type Destination = {
@@ -61,7 +66,7 @@ export const DEFAULT_PROGRAM: Program = {
   email: 'podcast@cortae.app',
   coverName: 'capa-demo.jpg',
   coverValid: true,
-  coverUrl: 'https://media.cortae.app/covers/capa-demo.jpg',
+  coverUrl: '',
   slug: 'cortae-entrevistas',
 };
 
@@ -84,7 +89,8 @@ export function createEpisode(
       ? crypto.randomUUID()
       : `cortae-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 
-  const extension = mimeType === 'audio/aac' ? 'aac' : 'mp3';
+  const extension =
+    mimeType === 'audio/aac' ? 'aac' : mimeType === 'audio/wav' ? 'wav' : 'mp3';
 
   return {
     guid,
@@ -102,7 +108,7 @@ export function createEpisode(
     mimeType: mimeType.startsWith('audio/') ? mimeType : 'audio/mpeg',
     sizeBytes,
     duration,
-    enclosureUrl: `https://media.cortae.app/episodes/${guid}.${extension}`,
+    enclosureUrl: '',
   };
 }
 
@@ -149,7 +155,7 @@ export function escapeXml(value: string | null | undefined) {
 }
 
 export function feedUrl(program: Program) {
-  return `https://feed.cortae.app/${slugify(program.slug || program.title)}.xml`;
+  return `/feed/${slugify(program.slug || program.title)}`;
 }
 
 export function buildFeedXml(program: Program, episode: Episode | null) {

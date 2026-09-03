@@ -14,7 +14,8 @@ const geistMono = Geist_Mono({
 
 export const metadata: Metadata = {
   title: 'Cortaê — Da live pro feed',
-  description: 'Transforme lives do YouTube em episódios de podcast prontos para publicar.',
+  description:
+    'Transforme lives do YouTube em episódios de podcast prontos para publicar.',
 };
 
 export default function RootLayout({

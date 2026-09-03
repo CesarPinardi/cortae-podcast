@@ -53,7 +53,6 @@ import { Progress } from '@/components/ui/progress';
 import { Slider } from '@/components/ui/slider';
 import { Textarea } from '@/components/ui/textarea';
 import {
-  buildFeedXml,
   createEpisode,
   DEFAULT_DESTINATIONS,
   DEFAULT_PROGRAM,
@@ -195,6 +194,81 @@ function fileNameFromTitle(title: string) {
     .replace(/[. ]+$/g, '')
     .trim();
   return fileName || FALLBACK_TITLE;
+}
+
+function createDemoAudioFile() {
+  const sampleRate = 8000;
+  const seconds = 1;
+  const dataSize = sampleRate * seconds * 2;
+  const buffer = new ArrayBuffer(44 + dataSize);
+  const view = new DataView(buffer);
+  const write = (offset: number, value: string) => {
+    for (let index = 0; index < value.length; index += 1)
+      view.setUint8(offset + index, value.charCodeAt(index));
+  };
+  write(0, 'RIFF');
+  view.setUint32(4, 36 + dataSize, true);
+  write(8, 'WAVE');
+  write(12, 'fmt ');
+  view.setUint32(16, 16, true);
+  view.setUint16(20, 1, true);
+  view.setUint16(22, 1, true);
+  view.setUint32(24, sampleRate, true);
+  view.setUint32(28, sampleRate * 2, true);
+  view.setUint16(32, 2, true);
+  view.setUint16(34, 16, true);
+  write(36, 'data');
+  view.setUint32(40, dataSize, true);
+  return new File([buffer], 'episodio-cortae.wav', { type: 'audio/wav' });
+}
+
+async function createDefaultCoverFile() {
+  const canvas = document.createElement('canvas');
+  canvas.width = 1400;
+  canvas.height = 1400;
+  const context = canvas.getContext('2d');
+  if (!context) throw new Error('Não foi possível preparar a capa.');
+  context.fillStyle = '#101313';
+  context.fillRect(0, 0, 1400, 1400);
+  context.fillStyle = '#d4f34a';
+  context.fillRect(100, 100, 1200, 1200);
+  context.fillStyle = '#101313';
+  context.font = '900 190px sans-serif';
+  context.fillText('CORTAÊ', 170, 720);
+  context.font = '700 62px sans-serif';
+  context.fillText('PODCAST', 180, 830);
+  const blob = await new Promise<Blob>((resolve, reject) =>
+    canvas.toBlob(
+      (value) =>
+        value
+          ? resolve(value)
+          : reject(new Error('Não foi possível preparar a capa.')),
+      'image/jpeg',
+      0.92,
+    ),
+  );
+  return new File([blob], 'capa-cortae.jpg', { type: 'image/jpeg' });
+}
+
+async function apiJson<T>(endpoint: string, init?: RequestInit) {
+  const response = await fetch(endpoint, init);
+  const payload: unknown = await response.json().catch(() => null);
+  if (!response.ok) {
+    const message =
+      payload &&
+      typeof payload === 'object' &&
+      'details' in payload &&
+      Array.isArray(payload.details)
+        ? payload.details[0]
+        : payload &&
+            typeof payload === 'object' &&
+            'error' in payload &&
+            typeof payload.error === 'string'
+          ? payload.error
+          : 'A operação não pôde ser concluída.';
+    throw new Error(String(message));
+  }
+  return payload as T;
 }
 
 async function getYoutubeTitle(url: string) {
@@ -380,6 +454,9 @@ export default function Home() {
   const [programOpen, setProgramOpen] = useState(true);
   const [feedOpen, setFeedOpen] = useState(false);
   const [hydrated, setHydrated] = useState(false);
+  const [coverFile, setCoverFile] = useState<File | null>(null);
+  const [audioFile, setAudioFile] = useState<File | null>(null);
+  const [publishing, setPublishing] = useState(false);
 
   const cutDuration = trim[1] - trim[0];
   const startPercent = (trim[0] / DURATION) * 100;
@@ -389,10 +466,12 @@ export default function Home() {
     () => Math.max(1, Math.round(cutDuration * 0.016)),
     [cutDuration],
   );
-  const feed = useMemo(() => feedUrl(program), [program]);
-  const feedXml = useMemo(
-    () => buildFeedXml(program, episode),
-    [program, episode],
+  const feed = useMemo(
+    () =>
+      typeof window === 'undefined'
+        ? feedUrl(program)
+        : new URL(feedUrl(program), window.location.origin).toString(),
+    [program],
   );
   const publicEpisodes = episode?.status === 'published' ? 1 : 0;
 
@@ -453,15 +532,17 @@ export default function Home() {
           if (current >= 100) {
             window.clearInterval(timer);
             window.setTimeout(() => {
+              const generatedAudio = createDemoAudioFile();
               setEpisode(
                 createEpisode(
                   episodeTitle,
                   fileName,
                   cutDuration,
-                  fileSize * 1024 * 1024,
-                  format.startsWith('AAC') ? 'audio/aac' : 'audio/mpeg',
+                  generatedAudio.size,
+                  generatedAudio.type,
                 ),
               );
+              setAudioFile(generatedAudio);
               setScreen('ready');
             }, 350);
             return 100;
@@ -529,15 +610,130 @@ export default function Home() {
   function updateEpisode(patch: Partial<Episode>) {
     setEpisode((current) => (current ? { ...current, ...patch } : current));
   }
-  function saveDraft() {
-    if (!episode) return;
-    setEpisode({ ...episode, status: 'draft' });
-    setNotice({
-      tone: 'success',
-      text: 'Rascunho salvo. Ele ainda não aparece no feed público.',
+  async function saveProgram() {
+    const form = new FormData();
+    form.set('title', program.title);
+    form.set('description', program.description);
+    form.set('author', program.author);
+    form.set('language', program.language);
+    form.set('category', program.category);
+    form.set('email', program.email);
+    form.set('explicit', String(program.explicit));
+    form.set('slug', program.slug || slugify(program.title));
+    const cover = coverFile ?? (await createDefaultCoverFile());
+    if (!coverFile) setCoverFile(cover);
+    form.set('cover', cover);
+    const saved = await apiJson<{ id: string; slug: string }>('/api/programs', {
+      method: 'POST',
+      body: form,
     });
+    setProgram((current) => ({ ...current, id: saved.id, slug: saved.slug }));
+    return saved;
   }
-  function publishNow() {
+
+  async function ensureHostedEpisode() {
+    if (!episode) throw new Error('Episódio ainda não está pronto.');
+    const savedProgram = await saveProgram();
+    let hosted = episode;
+    if (!hosted.programId) {
+      const created = await apiJson<{
+        guid: string;
+        audioKey: string;
+        mediaPath: string;
+      }>('/api/episodes', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          programId: savedProgram.id,
+          sourceUrl: url || 'https://www.youtube.com/',
+          title: hosted.title,
+          description: hosted.description,
+          kind: hosted.kind,
+          season: hosted.season,
+          number: hosted.number,
+          explicit: hosted.explicit,
+          timezone: hosted.timezone,
+          publishAt: hosted.publishAt,
+          audioName: hosted.audioName,
+          mimeType: hosted.mimeType,
+          sizeBytes: hosted.sizeBytes,
+          duration: hosted.duration,
+        }),
+      });
+      hosted = {
+        ...hosted,
+        guid: created.guid,
+        programId: savedProgram.id,
+        audioKey: created.audioKey,
+        enclosureUrl: created.mediaPath,
+      };
+    } else {
+      await apiJson(`/api/episodes/${hosted.guid}`, {
+        method: 'PATCH',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          title: hosted.title,
+          description: hosted.description,
+          kind: hosted.kind,
+          season: hosted.season,
+          number: hosted.number,
+          explicit: hosted.explicit,
+          timezone: hosted.timezone,
+          publishAt: hosted.publishAt,
+        }),
+      });
+    }
+    if (audioFile) {
+      const uploaded = await apiJson<{
+        sizeBytes: number;
+        mimeType: string;
+        mediaPath: string;
+      }>(`/api/episodes/${hosted.guid}/audio`, {
+        method: 'POST',
+        headers: { 'content-type': audioFile.type },
+        body: audioFile,
+      });
+      hosted = {
+        ...hosted,
+        sizeBytes: uploaded.sizeBytes,
+        mimeType: uploaded.mimeType,
+        audioKey: hosted.audioKey,
+        enclosureUrl: uploaded.mediaPath,
+      };
+      setAudioFile(null);
+    }
+    setEpisode(hosted);
+    return hosted;
+  }
+
+  async function saveDraft() {
+    if (!episode) return;
+    setPublishing(true);
+    try {
+      const hosted = await ensureHostedEpisode();
+      await apiJson(`/api/episodes/${hosted.guid}`, {
+        method: 'PATCH',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ publishAt: '', status: 'draft' }),
+      });
+      setEpisode({ ...hosted, status: 'draft', publishAt: '' });
+      setNotice({
+        tone: 'success',
+        text: 'Rascunho salvo no armazenamento. Ele ainda não aparece no feed público.',
+      });
+    } catch (caught) {
+      setNotice({
+        tone: 'error',
+        text:
+          caught instanceof Error
+            ? caught.message
+            : 'Não foi possível salvar o rascunho.',
+      });
+    } finally {
+      setPublishing(false);
+    }
+  }
+  async function publishNow() {
     if (!episode) return;
     const errors = validateEpisode(episode, program);
     if (errors.length) {
@@ -545,18 +741,36 @@ export default function Home() {
       setProgramOpen(true);
       return;
     }
-    setEpisode({
-      ...episode,
-      status: 'published',
-      publishAt: '',
-      publishedAt: new Date().toISOString(),
-    });
-    setNotice({
-      tone: 'success',
-      text: 'Publicado no feed. A leitura e a revisão dos agregadores acontecem separadamente.',
-    });
+    setPublishing(true);
+    try {
+      const hosted = await ensureHostedEpisode();
+      const published = await apiJson<{ publishedAt: string }>(
+        `/api/episodes/${hosted.guid}/publish`,
+        { method: 'POST' },
+      );
+      setEpisode({
+        ...hosted,
+        status: 'published',
+        publishAt: '',
+        publishedAt: published.publishedAt,
+      });
+      setNotice({
+        tone: 'success',
+        text: 'Publicado no feed público. A leitura e a revisão dos agregadores acontecem separadamente.',
+      });
+    } catch (caught) {
+      setNotice({
+        tone: 'error',
+        text:
+          caught instanceof Error
+            ? caught.message
+            : 'Não foi possível publicar o episódio.',
+      });
+    } finally {
+      setPublishing(false);
+    }
   }
-  function scheduleEpisode() {
+  async function scheduleEpisode() {
     if (!episode) return;
     if (
       !episode.publishAt ||
@@ -577,19 +791,50 @@ export default function Home() {
       setProgramOpen(true);
       return;
     }
-    setEpisode({ ...episode, status: 'scheduled' });
-    setNotice({
-      tone: 'success',
-      text: 'Agendamento salvo. O episódio só entra no feed no horário escolhido.',
-    });
+    setPublishing(true);
+    try {
+      const hosted = await ensureHostedEpisode();
+      const scheduled = await apiJson<{ status: EpisodeStatus }>(
+        `/api/episodes/${hosted.guid}/schedule`,
+        { method: 'POST' },
+      );
+      setEpisode({ ...hosted, status: scheduled.status });
+      setNotice({
+        tone: 'success',
+        text: 'Agendamento salvo no armazenamento. O episódio só entra no feed no horário escolhido.',
+      });
+    } catch (caught) {
+      setNotice({
+        tone: 'error',
+        text:
+          caught instanceof Error
+            ? caught.message
+            : 'Não foi possível agendar o episódio.',
+      });
+    } finally {
+      setPublishing(false);
+    }
   }
-  function cancelSchedule() {
+  async function cancelSchedule() {
     if (!episode) return;
-    setEpisode({ ...episode, status: 'draft', publishAt: '' });
-    setNotice({
-      tone: 'info',
-      text: 'Agendamento cancelado. O episódio voltou para rascunho.',
-    });
+    try {
+      await apiJson(`/api/episodes/${episode.guid}/schedule`, {
+        method: 'DELETE',
+      });
+      setEpisode({ ...episode, status: 'draft', publishAt: '' });
+      setNotice({
+        tone: 'info',
+        text: 'Agendamento cancelado. O episódio voltou para rascunho.',
+      });
+    } catch (caught) {
+      setNotice({
+        tone: 'error',
+        text:
+          caught instanceof Error
+            ? caught.message
+            : 'Não foi possível cancelar o agendamento.',
+      });
+    }
   }
   async function copyFeed() {
     try {
@@ -603,11 +848,7 @@ export default function Home() {
     }
   }
   function openFeedPreview() {
-    const blob = new Blob([feedXml], {
-      type: 'application/rss+xml;charset=utf-8',
-    });
-    const previewUrl = URL.createObjectURL(blob);
-    window.open(previewUrl, '_blank', 'noopener,noreferrer');
+    window.open(feed, '_blank', 'noopener,noreferrer');
   }
   function updateDestination(id: string, patch: Partial<Destination>) {
     setDestinations((current) => ({
@@ -979,6 +1220,7 @@ export default function Home() {
                               });
                               return;
                             }
+                            setCoverFile(file);
                             setProgram({
                               ...program,
                               coverName: file.name,
@@ -1173,6 +1415,7 @@ export default function Home() {
                     <div className="flex flex-col-reverse gap-3 sm:flex-row sm:justify-between">
                       <Button
                         className="rounded-xl"
+                        disabled={publishing}
                         onClick={saveDraft}
                         variant="outline"
                       >
@@ -1181,7 +1424,9 @@ export default function Home() {
                       <div className="flex flex-col gap-3 sm:flex-row">
                         <Button
                           className="rounded-xl"
-                          disabled={episode.status === 'published'}
+                          disabled={
+                            publishing || episode.status === 'published'
+                          }
                           onClick={scheduleEpisode}
                           variant="outline"
                         >
@@ -1189,7 +1434,9 @@ export default function Home() {
                         </Button>
                         <Button
                           className="rounded-xl font-bold"
-                          disabled={episode.status === 'published'}
+                          disabled={
+                            publishing || episode.status === 'published'
+                          }
                           onClick={publishNow}
                         >
                           <Radio className="size-4" /> Publicar agora
@@ -1209,6 +1456,12 @@ export default function Home() {
                         <CheckCircle2 className="size-4" /> Publicado no feed em{' '}
                         {new Date(episode.publishedAt).toLocaleString('pt-BR')}
                       </p>
+                    )}
+                    {publishing && (
+                      <output className="flex items-center gap-2 text-xs font-semibold text-muted-foreground">
+                        <LoaderCircle className="size-4 animate-spin" />{' '}
+                        Salvando no armazenamento público…
+                      </output>
                     )}
                   </div>
                 ) : (
