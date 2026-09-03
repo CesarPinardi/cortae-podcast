@@ -1,0 +1,50 @@
+/**
+ * The durable podcast model. Runtime queries intentionally use prepared D1
+ * statements so the HTTP boundary stays explicit and easy to exercise.
+ */
+export const podcastSchema = {
+  programs: [
+    'id',
+    'slug',
+    'title',
+    'description',
+    'author',
+    'language',
+    'category',
+    'explicit',
+    'email',
+    'cover_key',
+    'cover_content_type',
+    'created_at',
+    'updated_at',
+  ],
+  episodes: [
+    'guid',
+    'program_id',
+    'source_url',
+    'title',
+    'description',
+    'status',
+    'audio_key',
+    'audio_name',
+    'mime_type',
+    'size_bytes',
+    'duration_seconds',
+    'explicit',
+    'episode_type',
+    'season',
+    'episode_number',
+    'publish_at',
+    'timezone',
+    'published_at',
+    'created_at',
+    'updated_at',
+  ],
+  destinations: [
+    'program_id',
+    'platform',
+    'status',
+    'public_url',
+    'updated_at',
+  ],
+} as const;
