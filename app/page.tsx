@@ -20,6 +20,7 @@ import { Slider } from '@/components/ui/slider';
 type Screen = 'home' | 'loading' | 'editor' | 'exporting' | 'ready';
 
 const DURATION = 5554;
+const FALLBACK_TITLE = 'Episódio importado';
 const bars = Array.from({ length: 132 }, (_, i) => 16 + ((i * 31 + i * i * 7) % 72));
 const steps = [
   { Icon: Clock3, number: '01', title: 'Importe', copy: 'Cole o link assim que a transmissão acabar.' },
@@ -39,6 +40,32 @@ function parseTime(value: string, fallback: number) {
   if (parts.some(Number.isNaN) || parts.length < 2 || parts.length > 3) return fallback;
   const seconds = parts.length === 3 ? parts[0] * 3600 + parts[1] * 60 + parts[2] : parts[0] * 60 + parts[1];
   return Math.max(0, Math.min(DURATION, seconds));
+}
+
+function fileNameFromTitle(title: string) {
+  const fileName = title
+    .replace(/[<>:"/\\|?*]/g, '-')
+    .replace(/\s+/g, ' ')
+    .replace(/[. ]+$/g, '')
+    .trim();
+
+  return fileName || FALLBACK_TITLE;
+}
+
+async function getYoutubeTitle(url: string) {
+  const endpoint = new URL('https://www.youtube.com/oembed');
+  endpoint.searchParams.set('url', url);
+  endpoint.searchParams.set('format', 'json');
+
+  const response = await fetch(endpoint);
+  if (!response.ok) throw new Error('YouTube metadata request failed.');
+
+  const metadata: unknown = await response.json();
+  if (!metadata || typeof metadata !== 'object' || !('title' in metadata) || typeof metadata.title !== 'string' || !metadata.title.trim()) {
+    throw new Error('YouTube metadata did not include a title.');
+  }
+
+  return metadata.title.trim();
 }
 
 function TimeField({
@@ -107,14 +134,9 @@ export default function Home() {
   const [playing, setPlaying] = useState(false);
   const [confirmUncut, setConfirmUncut] = useState(false);
   const [progress, setProgress] = useState(0);
-  const [fileName, setFileName] = useState('pre-jogo-palmeiras-x-santos');
+  const [episodeTitle, setEpisodeTitle] = useState(FALLBACK_TITLE);
+  const [fileName, setFileName] = useState(FALLBACK_TITLE);
   const [format, setFormat] = useState('MP3 · 128 kbps');
-
-  useEffect(() => {
-    if (screen !== 'loading') return;
-    const timer = window.setTimeout(() => setScreen('editor'), 1700);
-    return () => window.clearTimeout(timer);
-  }, [screen]);
 
   useEffect(() => {
     if (!playing || position >= trim[1]) return;
@@ -142,14 +164,24 @@ export default function Home() {
   const positionPercent = (position / DURATION) * 100;
   const fileSize = useMemo(() => Math.max(1, Math.round(cutDuration * 0.016)), [cutDuration]);
 
-  function importEpisode(event: React.FormEvent) {
+  async function importEpisode(event: React.SyntheticEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!/^https?:\/\/(www\.)?(youtube\.com|youtu\.be)\//i.test(url.trim())) {
+    const youtubeUrl = url.trim();
+    if (!/^https?:\/\/(www\.)?(youtube\.com|youtu\.be)\//i.test(youtubeUrl)) {
       setUrlError('Cole um link válido do YouTube.');
       return;
     }
     setUrlError('');
     setScreen('loading');
+
+    const [title] = await Promise.all([
+      getYoutubeTitle(youtubeUrl).catch(() => FALLBACK_TITLE),
+      new Promise((resolve) => window.setTimeout(resolve, 1700)),
+    ]);
+
+    setEpisodeTitle(title);
+    setFileName(fileNameFromTitle(title));
+    setScreen('editor');
   }
 
   function beginExport() {
@@ -225,7 +257,7 @@ export default function Home() {
       <div className="mx-auto max-w-[1320px] px-5 pb-12 md:px-10">
         <button className="mb-6 inline-flex items-center gap-2 text-sm font-semibold text-muted-foreground hover:text-foreground" onClick={goHome}><ArrowLeft className="size-4" /> Trocar vídeo</button>
         <div className="mb-8 flex flex-col justify-between gap-5 md:flex-row md:items-end">
-          <div><div className="eyebrow"><Scissors className="size-3.5" /> CORTE DO EPISÓDIO</div><h1 className="mt-4 max-w-3xl text-3xl font-black tracking-[-.04em] md:text-5xl">Pré-jogo: Palmeiras x Santos</h1><p className="mt-3 text-sm text-muted-foreground">Ao vivo · 02 set 2026 · Duração original {formatTime(DURATION)}</p></div>
+          <div><div className="eyebrow"><Scissors className="size-3.5" /> CORTE DO EPISÓDIO</div><h1 className="mt-4 max-w-3xl text-3xl font-black tracking-[-.04em] md:text-5xl">{episodeTitle}</h1><p className="mt-3 text-sm text-muted-foreground">Ao vivo · 02 set 2026 · Duração original {formatTime(DURATION)}</p></div>
           <div className="flex items-center gap-2 rounded-full border border-border bg-card px-4 py-2 text-xs font-semibold"><span className="size-2 rounded-full bg-primary" /> Live importada</div>
         </div>
 
