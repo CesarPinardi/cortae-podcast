@@ -12,6 +12,7 @@ import {
   CircleDot,
   Clock3,
   Copy,
+  Download,
   ExternalLink,
   FileAudio,
   FileText,
@@ -50,6 +51,7 @@ import { Input } from '@/components/ui/input';
 import { Slider } from '@/components/ui/slider';
 import { Textarea } from '@/components/ui/textarea';
 import {
+  AUDIO_FILE_ACCEPT,
   createEpisode,
   DEFAULT_DESTINATIONS,
   DEFAULT_PROGRAM,
@@ -61,6 +63,8 @@ import {
   feedUrl,
   formatBytes,
   formatDuration,
+  isAcceptedAudioType,
+  MAX_AUDIO_BYTES,
   Program,
   slugify,
   validateEpisode,
@@ -73,8 +77,6 @@ const DURATION = 5554;
 const FALLBACK_TITLE = 'Episódio importado';
 const STORAGE_KEY = 'cortae-podcast-studio-v1';
 const PODCAST_API_ORIGIN = 'https://cortae-podcast.ymnrdh7nbd.chatgpt.site';
-const MAX_AUDIO_BYTES = 1_000_000_000;
-const ACCEPTED_AUDIO_TYPES = new Set(['audio/mpeg', 'audio/mp4', 'audio/aac']);
 const bars = Array.from(
   { length: 132 },
   (_, i) => 16 + ((i * 31 + i * i * 7) % 72),
@@ -185,15 +187,6 @@ function isoToLocalDateTime(value: string, timeZone: string) {
   if (!value) return '';
   const parts = dateTimeParts(new Date(value), timeZone);
   return `${parts.year}-${parts.month}-${parts.day}T${parts.hour}:${parts.minute}`;
-}
-
-function fileNameFromTitle(title: string) {
-  const fileName = title
-    .replace(/[<>:"/\\|?*]/g, '-')
-    .replace(/\s+/g, ' ')
-    .replace(/[. ]+$/g, '')
-    .trim();
-  return fileName || FALLBACK_TITLE;
 }
 
 async function createDefaultCoverFile() {
@@ -422,8 +415,6 @@ export default function Home() {
   const [confirmUncut, setConfirmUncut] = useState(false);
   const [confirmAudioReplace, setConfirmAudioReplace] = useState(false);
   const [episodeTitle, setEpisodeTitle] = useState(FALLBACK_TITLE);
-  const [fileName, setFileName] = useState(FALLBACK_TITLE);
-  const [format, setFormat] = useState('MP3 · 128 kbps');
   const [program, setProgram] = useState<Program>(DEFAULT_PROGRAM);
   const [episode, setEpisode] = useState<Episode | null>(null);
   const [destinations, setDestinations] =
@@ -437,15 +428,12 @@ export default function Home() {
   const [audioDuration, setAudioDuration] = useState(0);
   const [publishing, setPublishing] = useState(false);
   const audioInputRef = useRef<HTMLInputElement>(null);
+  const uploadedAudioFileRef = useRef<File | null>(null);
 
   const cutDuration = trim[1] - trim[0];
   const startPercent = (trim[0] / DURATION) * 100;
   const endPercent = (trim[1] / DURATION) * 100;
   const positionPercent = (position / DURATION) * 100;
-  const fileSize = useMemo(
-    () => Math.max(1, Math.round(cutDuration * 0.016)),
-    [cutDuration],
-  );
   const feed = useMemo(
     () =>
       typeof window === 'undefined'
@@ -539,7 +527,6 @@ export default function Home() {
       new Promise((resolve) => window.setTimeout(resolve, 1700)),
     ]);
     setEpisodeTitle(title);
-    setFileName(fileNameFromTitle(title));
     setScreen('editor');
   }
 
@@ -593,7 +580,7 @@ export default function Home() {
   }
   async function selectAudio(file: File | undefined) {
     if (!file) return;
-    if (!ACCEPTED_AUDIO_TYPES.has(file.type)) {
+    if (!isAcceptedAudioType(file.type)) {
       setNotice({
         tone: 'error',
         text: 'Envie um arquivo MP3, M4A ou AAC.',
@@ -608,14 +595,7 @@ export default function Home() {
       const duration = await readAudioDuration(file);
       setAudioFile(file);
       setAudioDuration(duration);
-      setFileName(file.name.replace(/\.[^.]+$/, ''));
-      setFormat(
-        file.type === 'audio/aac'
-          ? 'AAC'
-          : file.type === 'audio/mp4'
-            ? 'M4A'
-            : 'MP3',
-      );
+      uploadedAudioFileRef.current = null;
       updateEpisode({
         audioName: file.name,
         mimeType: file.type,
@@ -718,25 +698,30 @@ export default function Home() {
         }),
       });
     }
-    if (audioFile) {
+    if (audioFile && uploadedAudioFileRef.current !== audioFile) {
       const uploaded = await apiJson<{
         sizeBytes: number;
         mimeType: string;
+        duration: number;
         audioKey: string;
         mediaPath: string;
       }>(`/api/episodes/${hosted.guid}/audio`, {
         method: 'POST',
-        headers: { 'content-type': audioFile.type },
+        headers: {
+          'content-type': audioFile.type,
+          'x-audio-duration-seconds': String(audioDuration),
+        },
         body: audioFile,
       });
       hosted = {
         ...hosted,
         sizeBytes: uploaded.sizeBytes,
         mimeType: uploaded.mimeType,
+        duration: uploaded.duration,
         audioKey: uploaded.audioKey,
         enclosureUrl: uploaded.mediaPath,
       };
-      setAudioFile(null);
+      uploadedAudioFileRef.current = audioFile;
     }
     setEpisode(hosted);
     return hosted;
@@ -891,6 +876,25 @@ export default function Home() {
       ...current,
       [id]: { ...current[id], ...patch },
     }));
+  }
+  function downloadAudio() {
+    if (audioFile) {
+      const objectUrl = URL.createObjectURL(audioFile);
+      const anchor = document.createElement('a');
+      anchor.href = objectUrl;
+      anchor.download = audioFile.name;
+      anchor.click();
+      window.setTimeout(() => URL.revokeObjectURL(objectUrl), 0);
+      return;
+    }
+    if (episode?.status === 'published' && episode.enclosureUrl) {
+      window.open(episode.enclosureUrl, '_blank', 'noopener,noreferrer');
+      return;
+    }
+    setNotice({
+      tone: 'error',
+      text: 'O arquivo não está mais neste dispositivo. Selecione-o novamente para baixar.',
+    });
   }
   if (screen === 'home')
     return (
@@ -1362,7 +1366,7 @@ export default function Home() {
                       </button>
                       <input
                         ref={audioInputRef}
-                        accept="audio/mpeg,audio/mp4,audio/aac,.mp3,.m4a,.aac"
+                        accept={AUDIO_FILE_ACCEPT}
                         className="sr-only"
                         type="file"
                         onChange={(event) => {
@@ -1649,6 +1653,26 @@ export default function Home() {
                   automática de catálogo.
                 </p>
               </div>
+              <div className="external-feed-card">
+                <div className="flex items-center gap-2">
+                  <AlertTriangle className="size-4 text-amber-300" />
+                  <p className="text-sm font-bold">
+                    Já tenho um feed em outro host
+                  </p>
+                </div>
+                <p className="mt-2 text-xs leading-5 text-muted-foreground">
+                  Migração, redirect 301 e publicação em um host externo ainda
+                  não fazem parte desta versão. Você pode continuar baixando o
+                  arquivo final.
+                </p>
+                <Button
+                  className="mt-4 h-9 rounded-lg text-xs"
+                  onClick={downloadAudio}
+                  variant="outline"
+                >
+                  <Download className="size-3.5" /> Baixar arquivo final
+                </Button>
+              </div>
             </aside>
           </div>
         </div>
@@ -1851,44 +1875,12 @@ export default function Home() {
               Saída do arquivo
             </p>
             <h2 className="mt-2 text-xl font-bold">Detalhes do episódio</h2>
-            <label
-              className="mt-7 block text-sm font-semibold"
-              htmlFor="filename"
-            >
-              Nome do arquivo
-            </label>
-            <div className="mt-2 flex items-center rounded-xl border border-border bg-background pr-3 focus-within:ring-2 focus-within:ring-primary/30">
-              <Input
-                id="filename"
-                className="h-12 min-w-0 border-0 bg-transparent shadow-none focus-visible:ring-0"
-                value={fileName}
-                onChange={(event) => setFileName(event.target.value)}
-              />
-              <span className="text-xs text-muted-foreground">.mp3</span>
-            </div>
-            <label
-              className="mt-5 block text-sm font-semibold"
-              htmlFor="format"
-            >
-              Formato
-            </label>
-            <select
-              id="format"
-              className="mt-2 h-12 w-full rounded-xl border border-border bg-background px-3 text-sm outline-none focus:ring-2 focus:ring-primary/30"
-              value={format}
-              onChange={(event) => setFormat(event.target.value)}
-            >
-              <option>MP3 · 128 kbps</option>
-              <option>MP3 · 192 kbps</option>
-              <option>AAC · 128 kbps</option>
-            </select>
-            <div className="my-6 h-px bg-border" />
-            <label className="block text-sm font-semibold" htmlFor="final-audio">
+            <label className="mt-7 block text-sm font-semibold" htmlFor="final-audio">
               Arquivo final
             </label>
             <input
               ref={audioInputRef}
-              accept="audio/mpeg,audio/mp4,audio/aac,.mp3,.m4a,.aac"
+              accept={AUDIO_FILE_ACCEPT}
               className="mt-2 block w-full text-sm text-muted-foreground file:mr-3 file:rounded-lg file:border-0 file:bg-primary file:px-3 file:py-2 file:text-sm file:font-bold file:text-primary-foreground"
               id="final-audio"
               type="file"
@@ -1910,18 +1902,28 @@ export default function Home() {
             <div className="my-6 h-px bg-border" />
             <div className="space-y-3 text-sm">
               <p className="flex justify-between text-muted-foreground">
-                <span>Duração</span>
+                <span>Duração do arquivo</span>
                 <strong className="font-mono text-foreground">
-                  {formatTime(cutDuration)}
+                  {audioFile ? formatDuration(audioDuration) : '—'}
                 </strong>
               </p>
               <p className="flex justify-between text-muted-foreground">
-                <span>Tamanho estimado</span>
-                <strong className="text-foreground">~{fileSize} MB</strong>
+                <span>Tamanho do arquivo</span>
+                <strong className="text-foreground">
+                  {audioFile ? formatBytes(audioFile.size) : '—'}
+                </strong>
               </p>
               <p className="flex justify-between text-muted-foreground">
-                <span>Normalização</span>
-                <strong className="text-foreground">-16 LUFS</strong>
+                <span>Formato</span>
+                <strong className="text-foreground">
+                  {audioFile
+                    ? audioFile.type === 'audio/mp4'
+                      ? 'M4A'
+                      : audioFile.type === 'audio/aac'
+                        ? 'AAC'
+                        : 'MP3'
+                    : '—'}
+                </strong>
               </p>
             </div>
             <Button
