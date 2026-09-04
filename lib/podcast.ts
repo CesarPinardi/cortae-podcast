@@ -12,6 +12,14 @@ export type DestinationStatus =
   | 'available'
   | 'problem';
 
+export const MAX_AUDIO_BYTES = 1_000_000_000;
+export const AUDIO_MIME_TYPES = ['audio/mpeg', 'audio/mp4', 'audio/aac'] as const;
+export const AUDIO_FILE_ACCEPT = `${AUDIO_MIME_TYPES.join(',')},.mp3,.m4a,.aac`;
+
+export function isAcceptedAudioType(value: string) {
+  return (AUDIO_MIME_TYPES as readonly string[]).includes(value);
+}
+
 export type Program = {
   id?: string;
   title: string;
@@ -92,9 +100,6 @@ export function createEpisode(
       ? crypto.randomUUID()
       : `cortae-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 
-  const extension =
-    mimeType === 'audio/aac' ? 'aac' : mimeType === 'audio/wav' ? 'wav' : 'mp3';
-
   return {
     guid,
     title,
@@ -107,7 +112,7 @@ export function createEpisode(
     publishAt: '',
     timezone: 'America/Sao_Paulo',
     publishedAt: '',
-    audioName: `${audioName || 'episodio'}.${extension}`,
+    audioName: audioName || 'episodio.mp3',
     mimeType: mimeType.startsWith('audio/') ? mimeType : 'audio/mpeg',
     sizeBytes,
     duration,

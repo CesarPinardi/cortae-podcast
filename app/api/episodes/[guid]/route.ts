@@ -35,6 +35,7 @@ export async function PATCH(
   const title = stringField(body, 'title') || current.title;
   const description = stringField(body, 'description') || current.description;
   const kind = (stringField(body, 'kind') || current.kind) as EpisodeKind;
+  const audioName = stringField(body, 'audioName') || current.audioName;
   const timezone = stringField(body, 'timezone') || current.timezone;
   const publishAt = stringField(body, 'publishAt') || null;
   const status = stringField(body, 'status') || current.status;
@@ -50,7 +51,7 @@ export async function PATCH(
   const now = new Date().toISOString();
   await env.DB.prepare(
     `UPDATE episodes SET title=?1, description=?2, explicit=?3, episode_type=?4, season=?5, episode_number=?6,
-      publish_at=?7, timezone=?8, status=?9, updated_at=?10 WHERE guid=?11`,
+      publish_at=?7, timezone=?8, status=?9, audio_name=?10, updated_at=?11 WHERE guid=?12`,
   )
     .bind(
       title,
@@ -68,6 +69,7 @@ export async function PATCH(
       publishAtUtc,
       timezone,
       status,
+      audioName,
       now,
       guid,
     )

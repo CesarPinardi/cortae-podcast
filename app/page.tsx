@@ -1,6 +1,6 @@
 'use client';
 
-import { startTransition, useEffect, useMemo, useState } from 'react';
+import { startTransition, useEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertTriangle,
   ArrowLeft,
@@ -33,7 +33,6 @@ import {
   Sparkles,
   UploadCloud,
   Volume2,
-  WandSparkles,
   X,
 } from 'lucide-react';
 import {
@@ -49,10 +48,10 @@ import {
 } from '@/components/ui/alert-dialog';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { Progress } from '@/components/ui/progress';
 import { Slider } from '@/components/ui/slider';
 import { Textarea } from '@/components/ui/textarea';
 import {
+  AUDIO_FILE_ACCEPT,
   createEpisode,
   DEFAULT_DESTINATIONS,
   DEFAULT_PROGRAM,
@@ -64,12 +63,14 @@ import {
   feedUrl,
   formatBytes,
   formatDuration,
+  isAcceptedAudioType,
+  MAX_AUDIO_BYTES,
   Program,
   slugify,
   validateEpisode,
 } from '@/lib/podcast';
 
-type Screen = 'home' | 'loading' | 'editor' | 'exporting' | 'ready';
+type Screen = 'home' | 'loading' | 'editor' | 'ready';
 type Notice = { tone: 'success' | 'error' | 'info'; text: string } | null;
 
 const DURATION = 5554;
@@ -186,41 +187,6 @@ function isoToLocalDateTime(value: string, timeZone: string) {
   if (!value) return '';
   const parts = dateTimeParts(new Date(value), timeZone);
   return `${parts.year}-${parts.month}-${parts.day}T${parts.hour}:${parts.minute}`;
-}
-
-function fileNameFromTitle(title: string) {
-  const fileName = title
-    .replace(/[<>:"/\\|?*]/g, '-')
-    .replace(/\s+/g, ' ')
-    .replace(/[. ]+$/g, '')
-    .trim();
-  return fileName || FALLBACK_TITLE;
-}
-
-function createDemoAudioFile() {
-  const sampleRate = 8000;
-  const seconds = 1;
-  const dataSize = sampleRate * seconds * 2;
-  const buffer = new ArrayBuffer(44 + dataSize);
-  const view = new DataView(buffer);
-  const write = (offset: number, value: string) => {
-    for (let index = 0; index < value.length; index += 1)
-      view.setUint8(offset + index, value.charCodeAt(index));
-  };
-  write(0, 'RIFF');
-  view.setUint32(4, 36 + dataSize, true);
-  write(8, 'WAVE');
-  write(12, 'fmt ');
-  view.setUint32(16, 16, true);
-  view.setUint16(20, 1, true);
-  view.setUint16(22, 1, true);
-  view.setUint32(24, sampleRate, true);
-  view.setUint32(28, sampleRate * 2, true);
-  view.setUint16(32, 2, true);
-  view.setUint16(34, 16, true);
-  write(36, 'data');
-  view.setUint32(40, dataSize, true);
-  return new File([buffer], 'episodio-cortae.wav', { type: 'audio/wav' });
 }
 
 async function createDefaultCoverFile() {
@@ -448,10 +414,7 @@ export default function Home() {
   const [playing, setPlaying] = useState(false);
   const [confirmUncut, setConfirmUncut] = useState(false);
   const [confirmAudioReplace, setConfirmAudioReplace] = useState(false);
-  const [progress, setProgress] = useState(0);
   const [episodeTitle, setEpisodeTitle] = useState(FALLBACK_TITLE);
-  const [fileName, setFileName] = useState(FALLBACK_TITLE);
-  const [format, setFormat] = useState('MP3 · 128 kbps');
   const [program, setProgram] = useState<Program>(DEFAULT_PROGRAM);
   const [episode, setEpisode] = useState<Episode | null>(null);
   const [destinations, setDestinations] =
@@ -462,16 +425,15 @@ export default function Home() {
   const [hydrated, setHydrated] = useState(false);
   const [coverFile, setCoverFile] = useState<File | null>(null);
   const [audioFile, setAudioFile] = useState<File | null>(null);
+  const [audioDuration, setAudioDuration] = useState(0);
   const [publishing, setPublishing] = useState(false);
+  const audioInputRef = useRef<HTMLInputElement>(null);
+  const uploadedAudioFileRef = useRef<File | null>(null);
 
   const cutDuration = trim[1] - trim[0];
   const startPercent = (trim[0] / DURATION) * 100;
   const endPercent = (trim[1] / DURATION) * 100;
   const positionPercent = (position / DURATION) * 100;
-  const fileSize = useMemo(
-    () => Math.max(1, Math.round(cutDuration * 0.016)),
-    [cutDuration],
-  );
   const feed = useMemo(
     () =>
       typeof window === 'undefined'
@@ -535,40 +497,6 @@ export default function Home() {
   }, [playing, position, trim]);
 
   useEffect(() => {
-    if (screen !== 'exporting') return;
-    const startTimer = window.setTimeout(() => setProgress(8), 0);
-    const timer = window.setInterval(
-      () =>
-        setProgress((current) => {
-          if (current >= 100) {
-            window.clearInterval(timer);
-            window.setTimeout(() => {
-              const generatedAudio = createDemoAudioFile();
-              setEpisode(
-                createEpisode(
-                  episodeTitle,
-                  fileName,
-                  cutDuration,
-                  generatedAudio.size,
-                  generatedAudio.type,
-                ),
-              );
-              setAudioFile(generatedAudio);
-              setScreen('ready');
-            }, 350);
-            return 100;
-          }
-          return Math.min(100, current + 7);
-        }),
-      180,
-    );
-    return () => {
-      window.clearTimeout(startTimer);
-      window.clearInterval(timer);
-    };
-  }, [cutDuration, episodeTitle, fileName, fileSize, format, screen]);
-
-  useEffect(() => {
     if (!episode || episode.status !== 'scheduled' || !episode.publishAt)
       return;
     const refreshStatus = async () => {
@@ -599,7 +527,6 @@ export default function Home() {
       new Promise((resolve) => window.setTimeout(resolve, 1700)),
     ]);
     setEpisodeTitle(title);
-    setFileName(fileNameFromTitle(title));
     setScreen('editor');
   }
 
@@ -608,7 +535,86 @@ export default function Home() {
       setConfirmUncut(true);
       return;
     }
-    setScreen('exporting');
+    finishWithAudio();
+  }
+  function finishWithAudio() {
+    if (!audioFile || !audioDuration) {
+      setNotice({
+        tone: 'error',
+        text: 'Escolha um arquivo final MP3, M4A ou AAC antes de continuar.',
+      });
+      return;
+    }
+    setEpisode(
+      createEpisode(
+        episodeTitle,
+        audioFile.name,
+        audioDuration,
+        audioFile.size,
+        audioFile.type,
+      ),
+    );
+    setScreen('ready');
+  }
+  function readAudioDuration(file: File) {
+    return new Promise<number>((resolve, reject) => {
+      const element = document.createElement('audio');
+      const objectUrl = URL.createObjectURL(file);
+      const cleanup = () => URL.revokeObjectURL(objectUrl);
+      element.preload = 'metadata';
+      element.onloadedmetadata = () => {
+        const duration = element.duration;
+        cleanup();
+        if (!Number.isFinite(duration) || duration <= 0) {
+          reject(new Error('Não foi possível ler a duração do áudio.'));
+          return;
+        }
+        resolve(Math.round(duration));
+      };
+      element.onerror = () => {
+        cleanup();
+        reject(new Error('Não foi possível ler esse arquivo de áudio.'));
+      };
+      element.src = objectUrl;
+    });
+  }
+  async function selectAudio(file: File | undefined) {
+    if (!file) return;
+    if (!isAcceptedAudioType(file.type)) {
+      setNotice({
+        tone: 'error',
+        text: 'Envie um arquivo MP3, M4A ou AAC.',
+      });
+      return;
+    }
+    if (file.size <= 0 || file.size > MAX_AUDIO_BYTES) {
+      setNotice({ tone: 'error', text: 'O áudio deve ter até 1 GB.' });
+      return;
+    }
+    try {
+      const duration = await readAudioDuration(file);
+      setAudioFile(file);
+      setAudioDuration(duration);
+      uploadedAudioFileRef.current = null;
+      updateEpisode({
+        audioName: file.name,
+        mimeType: file.type,
+        sizeBytes: file.size,
+        duration,
+      });
+      setNotice({
+        tone: 'success',
+        text: `Arquivo final selecionado: ${file.name}.`,
+      });
+    } catch (caught) {
+      setNotice({
+        tone: 'error',
+        text:
+          caught instanceof Error
+            ? caught.message
+            : 'Não foi possível ler esse arquivo de áudio.',
+      });
+    }
   }
   function goHome() {
     setPlaying(false);
@@ -674,6 +680,7 @@ export default function Home() {
         audioKey: created.audioKey,
         enclosureUrl: created.mediaPath,
       };
+      setEpisode(hosted);
     } else {
       await apiJson(`/api/episodes/${hosted.guid}`, {
         method: 'PATCH',
@@ -687,28 +694,34 @@ export default function Home() {
           explicit: hosted.explicit,
           timezone: hosted.timezone,
           publishAt: hosted.publishAt,
+          audioName: hosted.audioName,
         }),
       });
     }
-    if (audioFile) {
+    if (audioFile && uploadedAudioFileRef.current !== audioFile) {
       const uploaded = await apiJson<{
         sizeBytes: number;
         mimeType: string;
+        duration: number;
         audioKey: string;
         mediaPath: string;
       }>(`/api/episodes/${hosted.guid}/audio`, {
         method: 'POST',
-        headers: { 'content-type': audioFile.type },
+        headers: {
+          'content-type': audioFile.type,
+          'x-audio-duration-seconds': String(audioDuration),
+        },
         body: audioFile,
       });
       hosted = {
         ...hosted,
         sizeBytes: uploaded.sizeBytes,
         mimeType: uploaded.mimeType,
+        duration: uploaded.duration,
         audioKey: uploaded.audioKey,
         enclosureUrl: uploaded.mediaPath,
       };
-      setAudioFile(null);
+      uploadedAudioFileRef.current = audioFile;
     }
     setEpisode(hosted);
     return hosted;
@@ -865,12 +878,30 @@ export default function Home() {
     }));
   }
   function downloadAudio() {
+    if (audioFile) {
+      const objectUrl = URL.createObjectURL(audioFile);
+      const anchor = document.createElement('a');
+      anchor.href = objectUrl;
+      anchor.download = audioFile.name;
+      anchor.click();
+      window.setTimeout(() => URL.revokeObjectURL(objectUrl), 0);
+      return;
+    }
+    if (episode?.status === 'published' && episode.enclosureUrl) {
+      const mediaUrl = new URL(
+        episode.enclosureUrl,
+        window.location.hostname.endsWith('github.io')
+          ? PODCAST_API_ORIGIN
+          : window.location.origin,
+      );
+      window.open(mediaUrl, '_blank', 'noopener,noreferrer');
+      return;
+    }
     setNotice({
-      tone: 'info',
-      text: 'No modo demonstração, o arquivo final continua disponível para download na etapa de geração.',
+      tone: 'error',
+      text: 'O arquivo não está mais neste dispositivo. Selecione-o novamente para baixar.',
     });
   }
-
   if (screen === 'home')
     return (
       <main className="min-h-screen bg-background text-foreground">
@@ -988,33 +1019,6 @@ export default function Home() {
         </div>
       </main>
     );
-  if (screen === 'exporting')
-    return (
-      <main className="min-h-screen">
-        <Header compact onHome={goHome} />
-        <div className="mx-auto grid min-h-[calc(100vh-80px)] max-w-xl place-items-center px-5 pb-24 text-center">
-          <div className="w-full">
-            <span className="mx-auto grid size-20 place-items-center rounded-full border border-primary/30 bg-primary/10 text-primary">
-              <WandSparkles className="size-9 animate-pulse" />
-            </span>
-            <p className="mt-8 text-xs font-bold uppercase tracking-[.16em] text-primary">
-              Gerando episódio
-            </p>
-            <h1 className="mt-3 text-3xl font-bold tracking-tight">
-              Deixando o áudio redondo.
-            </h1>
-            <p className="mt-3 text-sm leading-6 text-muted-foreground">
-              Aplicando cortes, normalização e metadados.
-            </p>
-            <Progress className="mx-auto mt-8 max-w-sm" value={progress} />
-            <p className="mt-3 font-mono text-xs text-muted-foreground">
-              {progress}% concluído
-            </p>
-          </div>
-        </div>
-      </main>
-    );
-
   if (screen === 'ready')
     return (
       <main className="min-h-screen">
@@ -1358,10 +1362,24 @@ export default function Home() {
                       </div>
                       <button
                         className="text-xs font-bold text-primary hover:underline"
-                        onClick={() => setConfirmAudioReplace(true)}
+                        onClick={() => {
+                          if (episode.status === 'published')
+                            setConfirmAudioReplace(true);
+                          else audioInputRef.current?.click();
+                        }}
                       >
                         Trocar áudio
                       </button>
+                      <input
+                        ref={audioInputRef}
+                        accept={AUDIO_FILE_ACCEPT}
+                        className="sr-only"
+                        type="file"
+                        onChange={(event) => {
+                          void selectAudio(event.target.files?.[0]);
+                          event.target.value = '';
+                        }}
+                      />
                     </div>
                     <div className="schedule-box">
                       <div className="flex items-start gap-3">
@@ -1684,15 +1702,7 @@ export default function Home() {
               <AlertDialogCancel onClick={() => setConfirmAudioReplace(false)}>
                 Manter áudio
               </AlertDialogCancel>
-              <AlertDialogAction
-                onClick={() => {
-                  setConfirmAudioReplace(false);
-                  setNotice({
-                    tone: 'info',
-                    text: 'A troca de áudio será liberada quando o armazenamento do arquivo estiver conectado.',
-                  });
-                }}
-              >
+              <AlertDialogAction onClick={() => setConfirmAudioReplace(false)}>
                 Entendi
               </AlertDialogAction>
             </AlertDialogFooter>
@@ -1727,6 +1737,7 @@ export default function Home() {
             <span className="size-2 rounded-full bg-primary" /> Live importada
           </div>
         </div>
+        <NoticeBanner notice={notice} />
         <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_330px]">
           <section className="rounded-3xl border border-border bg-card p-5 md:p-8">
             <div className="flex items-center justify-between gap-4">
@@ -1870,62 +1881,65 @@ export default function Home() {
               Saída do arquivo
             </p>
             <h2 className="mt-2 text-xl font-bold">Detalhes do episódio</h2>
-            <label
-              className="mt-7 block text-sm font-semibold"
-              htmlFor="filename"
-            >
-              Nome do arquivo
+            <label className="mt-7 block text-sm font-semibold" htmlFor="final-audio">
+              Arquivo final
             </label>
-            <div className="mt-2 flex items-center rounded-xl border border-border bg-background pr-3 focus-within:ring-2 focus-within:ring-primary/30">
-              <Input
-                id="filename"
-                className="h-12 min-w-0 border-0 bg-transparent shadow-none focus-visible:ring-0"
-                value={fileName}
-                onChange={(event) => setFileName(event.target.value)}
-              />
-              <span className="text-xs text-muted-foreground">.mp3</span>
-            </div>
-            <label
-              className="mt-5 block text-sm font-semibold"
-              htmlFor="format"
-            >
-              Formato
-            </label>
-            <select
-              id="format"
-              className="mt-2 h-12 w-full rounded-xl border border-border bg-background px-3 text-sm outline-none focus:ring-2 focus:ring-primary/30"
-              value={format}
-              onChange={(event) => setFormat(event.target.value)}
-            >
-              <option>MP3 · 128 kbps</option>
-              <option>MP3 · 192 kbps</option>
-              <option>AAC · 128 kbps</option>
-            </select>
+            <input
+              ref={audioInputRef}
+              accept={AUDIO_FILE_ACCEPT}
+              className="mt-2 block w-full text-sm text-muted-foreground file:mr-3 file:rounded-lg file:border-0 file:bg-primary file:px-3 file:py-2 file:text-sm file:font-bold file:text-primary-foreground"
+              id="final-audio"
+              type="file"
+              onChange={(event) => {
+                void selectAudio(event.target.files?.[0]);
+                event.target.value = '';
+              }}
+            />
+            <p className="mt-2 text-[11px] leading-5 text-muted-foreground">
+              MP3, M4A ou AAC · até 1 GB · envie o arquivo já finalizado. O
+              Cortaê não extrai áudio nem processa o corte.
+            </p>
+            {audioFile && (
+              <p className="mt-2 text-xs font-semibold text-primary">
+                {audioFile.name} · {formatBytes(audioFile.size)} ·{' '}
+                {formatDuration(audioDuration)}
+              </p>
+            )}
             <div className="my-6 h-px bg-border" />
             <div className="space-y-3 text-sm">
               <p className="flex justify-between text-muted-foreground">
-                <span>Duração</span>
+                <span>Duração do arquivo</span>
                 <strong className="font-mono text-foreground">
-                  {formatTime(cutDuration)}
+                  {audioFile ? formatDuration(audioDuration) : '—'}
                 </strong>
               </p>
               <p className="flex justify-between text-muted-foreground">
-                <span>Tamanho estimado</span>
-                <strong className="text-foreground">~{fileSize} MB</strong>
+                <span>Tamanho do arquivo</span>
+                <strong className="text-foreground">
+                  {audioFile ? formatBytes(audioFile.size) : '—'}
+                </strong>
               </p>
               <p className="flex justify-between text-muted-foreground">
-                <span>Normalização</span>
-                <strong className="text-foreground">-16 LUFS</strong>
+                <span>Formato</span>
+                <strong className="text-foreground">
+                  {audioFile
+                    ? audioFile.type === 'audio/mp4'
+                      ? 'M4A'
+                      : audioFile.type === 'audio/aac'
+                        ? 'AAC'
+                        : 'MP3'
+                    : '—'}
+                </strong>
               </p>
             </div>
             <Button
               className="mt-7 h-13 w-full rounded-xl text-sm font-bold"
               onClick={beginExport}
             >
-              Gerar áudio <ChevronRight className="size-4" />
+              Continuar com arquivo final <ChevronRight className="size-4" />
             </Button>
             <p className="mt-3 text-center text-[11px] leading-5 text-muted-foreground">
-              Depois de gerar, você poderá revisar e publicar no feed RSS.
+              Depois, você poderá revisar e publicar no feed RSS.
             </p>
           </aside>
         </div>
@@ -1949,10 +1963,10 @@ export default function Home() {
             <AlertDialogAction
               onClick={() => {
                 setConfirmUncut(false);
-                setScreen('exporting');
+                finishWithAudio();
               }}
             >
-              Gerar sem cortar
+              Continuar sem cortar
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
