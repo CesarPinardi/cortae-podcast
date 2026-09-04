@@ -888,7 +888,13 @@ export default function Home() {
       return;
     }
     if (episode?.status === 'published' && episode.enclosureUrl) {
-      window.open(episode.enclosureUrl, '_blank', 'noopener,noreferrer');
+      const mediaUrl = new URL(
+        episode.enclosureUrl,
+        window.location.hostname.endsWith('github.io')
+          ? PODCAST_API_ORIGIN
+          : window.location.origin,
+      );
+      window.open(mediaUrl, '_blank', 'noopener,noreferrer');
       return;
     }
     setNotice({

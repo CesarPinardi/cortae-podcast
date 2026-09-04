@@ -11,6 +11,7 @@
     "build:pages": "vite build --config vite.pages.config.ts",
     "start": "wrangler dev --config dist/server/wrangler.json",
     "test": "node --experimental-strip-types --test tests/*.test.ts",
+    "test:integration": "node tests/podcast-flow.mjs",
     "lint": "oxlint",
     "format": "oxfmt"
   },
