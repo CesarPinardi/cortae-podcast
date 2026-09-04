@@ -9,3 +9,17 @@ Para cada tarefa que alterar arquivos deste repositório, coordene estes agentes
 5. **Merge:** após o `OK` do revisor, volte ao mesmo agente de desenvolvimento para completar o merge do PR.
 
 Se qualquer etapa não puder ser concluída, informe o bloqueio e a causa ao usuário.
+
+## Agent skills
+
+### Issue tracker
+
+Issues e specs deste repo vivem no GitHub Issues; use a CLI `gh` para operações. Veja `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Use os labels canônicos `needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human` e `wontfix`. Veja `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Este é um repo single-context; leia `CONTEXT.md` na raiz e `docs/adr/` quando relevante. Veja `docs/agents/domain.md`.
