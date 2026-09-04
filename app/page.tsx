@@ -1,6 +1,6 @@
 'use client';
 
-import { startTransition, useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertTriangle,
   ArrowLeft,
@@ -75,7 +75,6 @@ type Notice = { tone: 'success' | 'error' | 'info'; text: string } | null;
 
 const DURATION = 5554;
 const FALLBACK_TITLE = 'Episódio importado';
-const STORAGE_KEY = 'cortae-podcast-studio-v1';
 const PODCAST_API_ORIGIN = 'https://cortae-podcast.ymnrdh7nbd.chatgpt.site';
 const bars = Array.from(
   { length: 132 },
@@ -238,7 +237,9 @@ async function apiJson<T>(endpoint: string, init?: RequestInit) {
             typeof payload.error === 'string'
           ? payload.error
           : 'A operação não pôde ser concluída.';
-    throw new Error(String(message));
+    const error = new Error(String(message)) as Error & { status?: number };
+    error.status = response.status;
+    throw error;
   }
   return payload as T;
 }
@@ -378,10 +379,12 @@ function DestinationStatusSelect({
   label,
   value,
   onChange,
+  disabled,
 }: {
   label: string;
   value: DestinationStatus;
   onChange: (value: DestinationStatus) => void;
+  disabled?: boolean;
 }) {
   const labels: Record<DestinationStatus, string> = {
     not_connected: 'Não conectado',
@@ -393,6 +396,7 @@ function DestinationStatusSelect({
     <select
       aria-label={`Estado no agregador: ${label}`}
       className="status-select"
+      disabled={disabled}
       value={value}
       onChange={(event) => onChange(event.target.value as DestinationStatus)}
     >
@@ -422,13 +426,17 @@ export default function Home() {
   const [notice, setNotice] = useState<Notice>(null);
   const [programOpen, setProgramOpen] = useState(true);
   const [feedOpen, setFeedOpen] = useState(false);
-  const [hydrated, setHydrated] = useState(false);
   const [coverFile, setCoverFile] = useState<File | null>(null);
   const [audioFile, setAudioFile] = useState<File | null>(null);
   const [audioDuration, setAudioDuration] = useState(0);
   const [publishing, setPublishing] = useState(false);
+  const [savingDestination, setSavingDestination] = useState<string | null>(
+    null,
+  );
   const audioInputRef = useRef<HTMLInputElement>(null);
   const uploadedAudioFileRef = useRef<File | null>(null);
+  const savedDestinationsRef =
+    useRef<Record<string, Destination>>(DEFAULT_DESTINATIONS);
 
   const cutDuration = trim[1] - trim[0];
   const startPercent = (trim[0] / DURATION) * 100;
@@ -449,43 +457,42 @@ export default function Home() {
   const publicEpisodes = episode?.status === 'published' ? 1 : 0;
 
   useEffect(() => {
-    try {
-      const raw = window.localStorage.getItem(STORAGE_KEY);
-      if (raw) {
-        const saved = JSON.parse(raw) as {
-          program?: Program;
-          episode?: Episode;
-          destinations?: Record<string, Destination>;
-        };
-        startTransition(() => {
-          if (saved.program)
-            setProgram({ ...DEFAULT_PROGRAM, ...saved.program });
-          if (saved.episode) {
-            setEpisode(saved.episode);
-            setScreen('ready');
-          }
-          if (saved.destinations)
-            setDestinations({ ...DEFAULT_DESTINATIONS, ...saved.destinations });
-        });
+    let cancelled = false;
+    async function loadDestinations() {
+      try {
+        const saved = await apiJson<{
+          id: string;
+          destinations: Record<string, Destination>;
+        }>(`/api/programs/${encodeURIComponent(program.slug)}/destinations`);
+        if (cancelled) return;
+        const next = { ...DEFAULT_DESTINATIONS, ...saved.destinations };
+        savedDestinationsRef.current = next;
+        setDestinations(next);
+        setProgram((current) =>
+          current.slug === program.slug
+            ? { ...current, id: saved.id }
+            : current,
+        );
+      } catch (caught) {
+        if (
+          !cancelled &&
+          (!(caught instanceof Error) ||
+            (caught as Error & { status?: number }).status !== 404)
+        )
+          setNotice({
+            tone: 'error',
+            text:
+              caught instanceof Error
+                ? `Não foi possível carregar os agregadores: ${caught.message}`
+                : 'Não foi possível carregar os agregadores.',
+          });
       }
-    } catch {
-      startTransition(() =>
-        setNotice({
-          tone: 'info',
-          text: 'Não foi possível recuperar o rascunho salvo. Você pode continuar normalmente.',
-        }),
-      );
     }
-    startTransition(() => setHydrated(true));
-  }, []);
-
-  useEffect(() => {
-    if (!hydrated) return;
-    window.localStorage.setItem(
-      STORAGE_KEY,
-      JSON.stringify({ program, episode, destinations }),
-    );
-  }, [hydrated, program, episode, destinations]);
+    if (program.slug) void loadDestinations();
+    return () => {
+      cancelled = true;
+    };
+  }, [program.slug]);
 
   useEffect(() => {
     if (!playing || position >= trim[1]) return;
@@ -871,11 +878,59 @@ export default function Home() {
   function openFeedPreview() {
     window.open(feed, '_blank', 'noopener,noreferrer');
   }
-  function updateDestination(id: string, patch: Partial<Destination>) {
+  function updateDestinationDraft(id: string, patch: Partial<Destination>) {
     setDestinations((current) => ({
       ...current,
       [id]: { ...current[id], ...patch },
     }));
+  }
+  async function saveDestination(id: string, patch: Partial<Destination> = {}) {
+    const next = { ...destinations[id], ...patch };
+    const previous =
+      savedDestinationsRef.current[id] ?? DEFAULT_DESTINATIONS[id];
+    setDestinations((current) => ({ ...current, [id]: next }));
+    setSavingDestination(id);
+    const endpoint = `/api/programs/${encodeURIComponent(program.slug)}/destinations/${id}`;
+    const persist = () =>
+      apiJson<{ destination: Destination }>(endpoint, {
+        method: 'PATCH',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(next),
+      });
+    try {
+      let saved: { destination: Destination };
+      try {
+        saved = await persist();
+      } catch (caught) {
+        if (
+          !(caught instanceof Error) ||
+          (caught as Error & { status?: number }).status !== 404
+        )
+          throw caught;
+        await saveProgram();
+        saved = await persist();
+      }
+      savedDestinationsRef.current = {
+        ...savedDestinationsRef.current,
+        [id]: saved.destination,
+      };
+      setDestinations((current) => ({
+        ...current,
+        [id]: saved.destination,
+      }));
+      setNotice({ tone: 'success', text: 'Dados do agregador salvos.' });
+    } catch (caught) {
+      setDestinations((current) => ({ ...current, [id]: previous }));
+      setNotice({
+        tone: 'error',
+        text:
+          caught instanceof Error
+            ? `Não foi possível salvar o agregador: ${caught.message}`
+            : 'Não foi possível salvar o agregador.',
+      });
+    } finally {
+      setSavingDestination(null);
+    }
   }
   function downloadAudio() {
     if (audioFile) {
@@ -1605,10 +1660,11 @@ export default function Home() {
                             </p>
                           </div>
                           <DestinationStatusSelect
+                            disabled={savingDestination === id}
                             label={data.name}
                             value={destination.status}
                             onChange={(status) =>
-                              updateDestination(id, { status })
+                              void saveDestination(id, { status })
                             }
                           />
                         </div>
@@ -1640,10 +1696,12 @@ export default function Home() {
                           <Input
                             id={`${id}-url`}
                             className="mt-1 h-9 text-xs"
+                            disabled={savingDestination === id}
                             placeholder="https://..."
                             value={destination.publicUrl}
+                            onBlur={() => void saveDestination(id)}
                             onChange={(event) =>
-                              updateDestination(id, {
+                              updateDestinationDraft(id, {
                                 publicUrl: event.target.value,
                               })
                             }

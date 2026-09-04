@@ -61,6 +61,42 @@ const program = await responseJson(
   }),
 );
 
+const destinations = await responseJson(
+  await fetch(`${baseUrl}/api/programs/${slug}/destinations`),
+);
+assert.equal(destinations.destinations.spotify.status, 'not_connected');
+
+const updatedDestination = await responseJson(
+  await fetch(`${baseUrl}/api/programs/${slug}/destinations/spotify`, {
+    method: 'PATCH',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      status: 'available',
+      publicUrl: 'https://open.spotify.com/show/fixture',
+    }),
+  }),
+);
+assert.deepEqual(updatedDestination.destination, {
+  status: 'available',
+  publicUrl: 'https://open.spotify.com/show/fixture',
+});
+const persistedDestinations = await responseJson(
+  await fetch(`${baseUrl}/api/programs/${slug}/destinations`),
+);
+assert.deepEqual(persistedDestinations.destinations.spotify, {
+  status: 'available',
+  publicUrl: 'https://open.spotify.com/show/fixture',
+});
+const invalidDestination = await fetch(
+  `${baseUrl}/api/programs/${slug}/destinations/spotify`,
+  {
+    method: 'PATCH',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ status: 'available', publicUrl: 'não é uma url' }),
+  },
+);
+assert.equal(invalidDestination.status, 422);
+
 const missingAudio = await createEpisode(program.id, 'sem-audio');
 await fetch(`${baseUrl}/api/episodes/${missingAudio.guid}`, {
   method: 'PATCH',
