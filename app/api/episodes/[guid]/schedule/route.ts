@@ -12,6 +12,13 @@ export async function POST(
   const publishAtUtc = episode.publishAt ? toUtcIso(episode.publishAt) : null;
   if (!publishAtUtc || Date.parse(publishAtUtc) <= Date.now())
     return error('Escolha uma data futura válida.', 422);
+  const audio = await env.MEDIA.head(episode.audioKey);
+  if (
+    !audio ||
+    audio.size !== episode.sizeBytes ||
+    (episode.audioEtag && audio.httpEtag !== episode.audioEtag)
+  )
+    return error('Envie um áudio final válido antes de agendar.', 422);
   const now = new Date().toISOString();
   await env.DB.prepare(
     `UPDATE episodes SET status='scheduled', publish_at=?1, updated_at=?2 WHERE guid=?3 AND status <> 'published'`,

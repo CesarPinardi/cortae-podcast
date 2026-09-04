@@ -3,6 +3,7 @@ import { error, json, safeSegment } from '@/lib/server/http';
 import { findEpisode } from '@/lib/server/podcast-db';
 
 const MAX_AUDIO_BYTES = 1_000_000_000;
+const acceptedAudioTypes = new Set(['audio/mpeg', 'audio/mp4', 'audio/aac']);
 
 export async function POST(
   request: Request,
@@ -17,10 +18,17 @@ export async function POST(
       409,
     );
   const contentType = request.headers.get('content-type')?.split(';')[0] ?? '';
-  if (!contentType.startsWith('audio/'))
-    return error('Envie um arquivo de áudio com Content-Type audio/*.', 415);
-  const contentLength = Number(request.headers.get('content-length'));
-  if (Number.isFinite(contentLength) && contentLength > MAX_AUDIO_BYTES)
+  if (!acceptedAudioTypes.has(contentType))
+    return error('Envie um arquivo MP3, M4A ou AAC.', 415);
+  const contentLengthHeader = request.headers.get('content-length');
+  const contentLength = Number(contentLengthHeader);
+  if (
+    !contentLengthHeader ||
+    !Number.isInteger(contentLength) ||
+    contentLength <= 0
+  )
+    return error('Informe o tamanho do arquivo de áudio.', 411);
+  if (contentLength > MAX_AUDIO_BYTES)
     return error('O áudio excede o limite de 1 GB.', 413);
   if (!request.body) return error('O corpo do upload está vazio.', 400);
   const audioKey = `audio/${episode.programId}/${guid}/${crypto.randomUUID()}-${safeSegment(episode.audioName)}`;
@@ -30,6 +38,10 @@ export async function POST(
       cacheControl: 'public, max-age=31536000, immutable',
     },
   });
+  if (object.size !== contentLength) {
+    await env.MEDIA.delete(audioKey);
+    return error('O tamanho do upload não corresponde ao arquivo enviado.', 400);
+  }
   const now = new Date().toISOString();
   const result = await env.DB.prepare(
     `UPDATE episodes SET audio_key=?1, audio_etag=?2, mime_type=?3, size_bytes=?4, status=?5, updated_at=?6

@@ -92,9 +92,6 @@ export function createEpisode(
       ? crypto.randomUUID()
       : `cortae-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 
-  const extension =
-    mimeType === 'audio/aac' ? 'aac' : mimeType === 'audio/wav' ? 'wav' : 'mp3';
-
   return {
     guid,
     title,
@@ -107,7 +104,7 @@ export function createEpisode(
     publishAt: '',
     timezone: 'America/Sao_Paulo',
     publishedAt: '',
-    audioName: `${audioName || 'episodio'}.${extension}`,
+    audioName: audioName || 'episodio.mp3',
     mimeType: mimeType.startsWith('audio/') ? mimeType : 'audio/mpeg',
     sizeBytes,
     duration,
