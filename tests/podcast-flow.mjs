@@ -3,20 +3,63 @@ import assert from 'node:assert/strict';
 const baseUrl = process.env.TEST_BASE_URL ?? 'http://localhost:3000';
 const authCookie = process.env.TEST_AUTH_COOKIE;
 const csrfToken = process.env.TEST_CSRF_TOKEN;
-const authHeaders = () =>
-  authCookie && csrfToken
-    ? { cookie: authCookie, 'x-csrf-token': csrfToken }
-    : {};
-if (!authCookie || !csrfToken) {
-  const protectedResponse = await fetch(`${baseUrl}/api/programs`, {
-    method: 'POST',
-  });
-  assert.equal(protectedResponse.status, 401);
-  console.log(
-    'Guardas de autenticação HTTP passaram; fluxo completo requer sessão de teste.',
+const authHeaders = (cookie = authCookie, token = csrfToken) =>
+  cookie && token ? { cookie, 'x-csrf-token': token } : {};
+
+// TEST_BASE_URL: servidor HTTP do teste (padrão http://localhost:3000).
+// TEST_AUTH_COOKIE e TEST_CSRF_TOKEN: sessão válida para o fluxo completo.
+// TEST_AUTH_COOKIE_A/B e TEST_CSRF_TOKEN_A/B: duas sessões válidas, cada uma
+// ligada a um canal distinto, para o cenário opcional de isolamento.
+// TEST_CROSS_PROGRAM_ID, TEST_CROSS_PROGRAM_SLUG e TEST_CROSS_EPISODE_GUID:
+// fixture pertencente à sessão A usado nas tentativas da sessão B.
+
+async function expectStatus(label, response, expected) {
+  assert.equal(
+    response.status,
+    expected,
+    `${label}: esperado ${expected}, recebido ${response.status}`,
   );
-  process.exit(0);
 }
+
+async function assertAnonymousProtection() {
+  const protectedRoutes = /** @type {Array<[string, string, RequestInit]>} */ ([
+    ['program POST', '/api/programs', { method: 'POST' }],
+    ['program GET', '/api/programs?slug=visitante', {}],
+    [
+      'program PATCH',
+      '/api/programs/fixture',
+      { method: 'PATCH', headers: { 'content-type': 'multipart/form-data' } },
+    ],
+    ['episode POST', '/api/episodes', { method: 'POST' }],
+    ['episode GET', '/api/episodes/fixture', {}],
+    [
+      'episode PATCH',
+      '/api/episodes/fixture',
+      { method: 'PATCH', headers: { 'content-type': 'application/json' } },
+    ],
+    ['upload POST', '/api/episodes/fixture/audio', { method: 'POST' }],
+    [
+      'source verify POST',
+      '/api/youtube/verify',
+      { method: 'POST', headers: { 'content-type': 'application/json' } },
+    ],
+    ['publish POST', '/api/episodes/fixture/publish', { method: 'POST' }],
+    ['schedule POST', '/api/episodes/fixture/schedule', { method: 'POST' }],
+    ['schedule DELETE', '/api/episodes/fixture/schedule', { method: 'DELETE' }],
+  ]);
+  for (const [label, path, init] of protectedRoutes)
+    await expectStatus(
+      `visitante ${label}`,
+      await fetch(`${baseUrl}${path}`, init),
+      401,
+    );
+}
+
+await assertAnonymousProtection();
+
+if (!authCookie || !csrfToken) {
+  console.log('Guardas HTTP anônimas passaram; sessão não configurada.');
+} else {
 const slug = `fluxo-audio-${Date.now()}`;
 const coverBytes = new Uint8Array(26);
 coverBytes.set([137, 80, 78, 71, 13, 10, 26, 10]);
@@ -78,6 +121,13 @@ const program = await responseJson(
   }),
 );
 
+const privateProgram = await responseJson(
+  await fetch(`${baseUrl}/api/programs?slug=${encodeURIComponent(slug)}`, {
+    headers: authHeaders(),
+  }),
+);
+assert.equal(privateProgram.id, program.id);
+
 const missingAudio = await createEpisode(program.id, 'sem-audio');
 await fetch(`${baseUrl}/api/episodes/${missingAudio.guid}`, {
   method: 'PATCH',
@@ -138,6 +188,10 @@ const published = await responseJson(
 );
 assert.equal(published.status, 'published');
 
+const feedResponse = await fetch(`${baseUrl}/feed/${program.slug}`);
+assert.equal(feedResponse.status, 200);
+assert.match(await feedResponse.text(), new RegExp(episode.title));
+
 const mediaUrl = `${baseUrl}${uploaded.mediaPath}`;
 const head = await fetch(mediaUrl, { method: 'HEAD' });
 assert.equal(head.status, 200);
@@ -154,3 +208,133 @@ assert.equal(invalidRange.status, 416);
 assert.equal((await fetch(`${baseUrl}/media/audio/ausente.mp3`)).status, 404);
 
 console.log('Fluxo HTTP de áudio final passou.');
+}
+
+const cookieA = process.env.TEST_AUTH_COOKIE_A;
+const csrfA = process.env.TEST_CSRF_TOKEN_A;
+const cookieB = process.env.TEST_AUTH_COOKIE_B;
+const csrfB = process.env.TEST_CSRF_TOKEN_B;
+const crossProgramId = process.env.TEST_CROSS_PROGRAM_ID;
+const crossProgramSlug = process.env.TEST_CROSS_PROGRAM_SLUG;
+const crossEpisodeGuid = process.env.TEST_CROSS_EPISODE_GUID;
+
+if (authCookie) {
+  await expectStatus(
+    'sessão sem CSRF',
+    await fetch(`${baseUrl}/api/programs`, {
+      method: 'POST',
+      headers: { cookie: authCookie },
+    }),
+    403,
+  );
+}
+
+if (
+  cookieA &&
+  csrfA &&
+  cookieB &&
+  csrfB &&
+  crossProgramId &&
+  crossProgramSlug &&
+  crossEpisodeGuid
+) {
+  const headersA = authHeaders(cookieA, csrfA);
+  const headersB = authHeaders(cookieB, csrfB);
+  await expectStatus(
+    'sessão A lê programa fixture',
+    await fetch(
+      `${baseUrl}/api/programs?slug=${encodeURIComponent(crossProgramSlug)}`,
+      { headers: headersA },
+    ),
+    200,
+  );
+  await expectStatus(
+    'sessão A lê episódio fixture',
+    await fetch(`${baseUrl}/api/episodes/${crossEpisodeGuid}`, {
+      headers: headersA,
+    }),
+    200,
+  );
+  const crossRoutes = /** @type {Array<[string, string, RequestInit]>} */ ([
+    [
+      'program GET',
+      `/api/programs?slug=${encodeURIComponent(crossProgramSlug)}`,
+      {},
+    ],
+    [
+      'episode POST',
+      '/api/episodes',
+      {
+        method: 'POST',
+        headers: { ...headersB, 'content-type': 'application/json' },
+        body: JSON.stringify({
+          programId: crossProgramId,
+          sourceUrl: 'https://www.youtube.com/watch?v=fixture',
+          title: 'Tentativa cruzada',
+          description: 'Tentativa cruzada sem autorização do proprietário.',
+          kind: 'full',
+          mimeType: 'audio/mpeg',
+          sizeBytes: 128,
+          duration: 120,
+        }),
+      },
+    ],
+    ['episode GET', `/api/episodes/${crossEpisodeGuid}`, {}],
+    [
+      'episode PATCH',
+      `/api/episodes/${crossEpisodeGuid}`,
+      {
+        method: 'PATCH',
+        headers: { ...headersB, 'content-type': 'application/json' },
+        body: JSON.stringify({ title: 'Tentativa cruzada' }),
+      },
+    ],
+    [
+      'upload POST',
+      `/api/episodes/${crossEpisodeGuid}/audio`,
+      { method: 'POST' },
+    ],
+    [
+      'source verify POST',
+      '/api/youtube/verify',
+      {
+        method: 'POST',
+        headers: { ...headersB, 'content-type': 'application/json' },
+        body: JSON.stringify({
+          programId: crossProgramId,
+          sourceUrl: 'https://www.youtube.com/watch?v=fixture',
+        }),
+      },
+    ],
+    [
+      'publish POST',
+      `/api/episodes/${crossEpisodeGuid}/publish`,
+      { method: 'POST' },
+    ],
+    [
+      'schedule POST',
+      `/api/episodes/${crossEpisodeGuid}/schedule`,
+      { method: 'POST' },
+    ],
+    [
+      'schedule DELETE',
+      `/api/episodes/${crossEpisodeGuid}/schedule`,
+      { method: 'DELETE' },
+    ],
+  ]);
+  for (const [label, path, init] of crossRoutes) {
+    const headers = new Headers(init.headers);
+    for (const [name, value] of Object.entries(headersB))
+      headers.set(name, value);
+    const requestInit = {
+      ...init,
+      headers,
+    };
+    await expectStatus(
+      `sessão B não acessa ${label}`,
+      await fetch(`${baseUrl}${path}`, requestInit),
+      404,
+    );
+  }
+  console.log('Isolamento HTTP entre duas sessões passou.');
+}

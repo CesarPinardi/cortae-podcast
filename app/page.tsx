@@ -227,15 +227,26 @@ function isoToLocalDateTime(value: string, timeZone: string) {
   return `${parts.year}-${parts.month}-${parts.day}T${parts.hour}:${parts.minute}`;
 }
 
-function apiOrigin() {
-  if (typeof window === 'undefined') return PODCAST_API_ORIGIN;
-  return window.location.hostname.endsWith('github.io')
+function isGithubPagesHost() {
+  if (typeof window === 'undefined') return false;
+  return (
+    window.location.hostname === 'github.io' ||
+    window.location.hostname.endsWith('.github.io')
+  );
+}
+
+function sessionOrigin() {
+  return typeof window === 'undefined'
     ? PODCAST_API_ORIGIN
     : window.location.origin;
 }
 
+function studioUrl(endpoint: string) {
+  return new URL(endpoint, PODCAST_API_ORIGIN);
+}
+
 function apiUrl(endpoint: string) {
-  return new URL(endpoint, apiOrigin());
+  return new URL(endpoint, sessionOrigin());
 }
 
 function workspaceStorageKey(session: AuthSession) {
@@ -280,6 +291,11 @@ async function apiJson<T>(
   init: RequestInit = {},
   csrfToken?: string,
 ) {
+  if (isGithubPagesHost())
+    throw new ApiError(
+      'Abra o estúdio hospedado para usar a área autenticada.',
+      0,
+    );
   const headers = new Headers(init.headers);
   if (csrfToken) headers.set('x-csrf-token', csrfToken);
   const response = await fetch(apiUrl(endpoint), {
@@ -651,7 +667,10 @@ export default function Home() {
   const startPercent = (trim[0] / DURATION) * 100;
   const endPercent = (trim[1] / DURATION) * 100;
   const positionPercent = (position / DURATION) * 100;
-  const feed = useMemo(() => new URL(feedUrl(program), apiOrigin()).toString(), [program]);
+  const feed = useMemo(
+    () => new URL(feedUrl(program), PODCAST_API_ORIGIN).toString(),
+    [program],
+  );
   const publicEpisodes = episode?.status === 'published' ? 1 : 0;
   const displayedVerification =
     sourceVerification ??
@@ -671,7 +690,7 @@ export default function Home() {
     ? workspaceStorageKey(auth)
     : `${STORAGE_KEY}:anonymous`;
   const hasAuth = auth !== null;
-  const loginUrl = apiUrl('/api/auth/google').toString();
+  const loginUrl = studioUrl('/api/auth/google').toString();
   const headerProps = {
     auth,
     authLoading,
@@ -699,6 +718,17 @@ export default function Home() {
 
   useEffect(() => {
     let active = true;
+    if (isGithubPagesHost()) {
+      const timer = window.setTimeout(() => {
+        if (!active) return;
+        setAuth(null);
+        setAuthLoading(false);
+      }, 0);
+      return () => {
+        active = false;
+        window.clearTimeout(timer);
+      };
+    }
     const load = async (initial: boolean) => {
       try {
         const next = await apiJson<AuthResponse>('/api/auth/session');
