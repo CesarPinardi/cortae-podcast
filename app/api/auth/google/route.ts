@@ -1,5 +1,9 @@
 import { error } from '@/lib/server/http';
-import { buildAuthorizationUrl, createOAuthState } from '@/lib/server/auth';
+import {
+  buildAuthorizationUrl,
+  createOAuthState,
+  oauthStateCookie,
+} from '@/lib/server/auth';
 
 export async function GET(request: Request) {
   try {
@@ -10,10 +14,12 @@ export async function GET(request: Request) {
       verifier,
       nonce,
     );
-    return new Response(null, {
+    const response = new Response(null, {
       status: 302,
       headers: { location: location.toString(), 'cache-control': 'no-store' },
     });
+    response.headers.append('set-cookie', oauthStateCookie(state));
+    return response;
   } catch (cause) {
     return error(
       cause instanceof Error ? cause.message : 'Login Google indisponível.',

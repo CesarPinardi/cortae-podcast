@@ -10,8 +10,10 @@ import {
 
 export const SESSION_COOKIE = '__Host-cortae_session';
 export const CSRF_COOKIE = '__Host-cortae_csrf';
+export const OAUTH_STATE_COOKIE = '__Host-cortae_oauth_state';
 const SESSION_DAYS = 30;
 const OAUTH_STATE_MINUTES = 10;
+const OAUTH_STATE_SECONDS = OAUTH_STATE_MINUTES * 60;
 const CONNECTION_GRACE_MS = 60_000;
 
 type OAuthStateRow = {
@@ -102,7 +104,7 @@ async function hash(value: string) {
   );
 }
 
-function constantTimeEqual(left: string, right: string) {
+export function constantTimeEqual(left: string, right: string) {
   const a = new TextEncoder().encode(left);
   const b = new TextEncoder().encode(right);
   let result = a.length ^ b.length;
@@ -189,6 +191,19 @@ function cookie(name: string, value: string, maxAge: number) {
 
 function csrfCookie(value: string, maxAge: number) {
   return `${CSRF_COOKIE}=${value}; Max-Age=${maxAge}; Path=/; Secure; SameSite=Lax`;
+}
+
+export function oauthStateCookie(value: string, maxAge = OAUTH_STATE_SECONDS) {
+  return `${OAUTH_STATE_COOKIE}=${value}; Max-Age=${maxAge}; Path=/; HttpOnly; Secure; SameSite=Lax`;
+}
+
+export function clearOAuthStateCookie() {
+  return oauthStateCookie('', 0);
+}
+
+export function matchesOAuthStateCookie(request: Request, state: string) {
+  const cookieValue = getCookie(request, OAUTH_STATE_COOKIE);
+  return Boolean(cookieValue && constantTimeEqual(cookieValue, state));
 }
 
 export function clearAuthCookies() {

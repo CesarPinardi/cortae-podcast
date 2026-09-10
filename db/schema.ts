@@ -53,6 +53,15 @@ export const podcastSchema = {
     'status',
     'used_at',
   ],
+  ownership_associations: [
+    'id',
+    'program_id',
+    'user_id',
+    'channel_id',
+    'actor',
+    'reason',
+    'created_at',
+  ],
   programs: [
     'id',
     'slug',

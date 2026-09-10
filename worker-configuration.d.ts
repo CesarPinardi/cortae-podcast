@@ -12,6 +12,7 @@ interface __BaseEnv_Env {
   GOOGLE_JWKS_URL?: string;
   GOOGLE_REVOKE_URL?: string;
   YOUTUBE_API_BASE_URL?: string;
+  OWNERSHIP_ADMIN_TOKEN?: string;
 }
 declare namespace Cloudflare {
   interface GlobalProps {

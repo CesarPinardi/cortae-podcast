@@ -31,6 +31,7 @@ export async function POST(request: Request) {
       verificationId: verification.id,
       videoId: verification.videoId,
       channelId: verification.channelId,
+      sourceUrl: verification.sourceUrl,
       expiresAt: verification.expiresAt,
     });
   } catch (cause) {
