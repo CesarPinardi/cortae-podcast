@@ -1,9 +1,12 @@
 import { env } from 'cloudflare:workers';
 import type { Destination, Episode, Program } from '@/lib/podcast';
+import { usableConnection, type YoutubeConnection } from '@/lib/server/auth';
 
 type ProgramRow = {
   id: string;
   slug: string;
+  owner_user_id: string | null;
+  channel_id: string | null;
   title: string;
   description: string;
   author: string;
@@ -20,7 +23,11 @@ type ProgramRow = {
 type EpisodeRow = {
   guid: string;
   program_id: string;
+  owner_user_id: string | null;
   source_url: string;
+  source_video_id: string | null;
+  source_channel_id: string | null;
+  source_verification_id: string | null;
   title: string;
   description: string;
   status: Episode['status'];
@@ -60,6 +67,8 @@ export function programFromRow(
 ): Program & { id: string; coverKey: string } {
   return {
     id: row.id,
+    ownerUserId: row.owner_user_id,
+    channelId: row.channel_id,
     title: row.title,
     description: row.description,
     author: row.author,
@@ -97,7 +106,11 @@ export function episodeFromRow(
     duration: row.duration_seconds,
     enclosureUrl: '',
     programId: row.program_id,
+    ownerUserId: row.owner_user_id,
     sourceUrl: row.source_url,
+    sourceVideoId: row.source_video_id,
+    sourceChannelId: row.source_channel_id,
+    sourceVerificationId: row.source_verification_id,
     audioKey: row.audio_key,
     audioEtag: row.audio_etag ?? undefined,
     updatedAt: row.updated_at,
@@ -111,19 +124,64 @@ export async function publishDueEpisodes(
   now = new Date().toISOString(),
 ) {
   const due = await bindings.DB.prepare(
-    `SELECT * FROM episodes
+    `SELECT e.*, p.owner_user_id AS program_owner_user_id, p.channel_id AS program_channel_id
+       FROM episodes e JOIN programs p ON p.id=e.program_id
        WHERE status='scheduled' AND publish_at IS NOT NULL
        AND julianday(publish_at) <= julianday(?1)`,
   )
     .bind(now)
-    .all<EpisodeRow>();
+    .all<
+      EpisodeRow & {
+        program_owner_user_id: string | null;
+        program_channel_id: string | null;
+      }
+    >();
   let published = 0;
   for (const row of due.results) {
+    if (
+      !row.program_owner_user_id ||
+      !row.program_channel_id ||
+      !row.source_verification_id ||
+      row.source_channel_id !== row.program_channel_id
+    )
+      continue;
     const program = await bindings.DB.prepare(
       'SELECT * FROM programs WHERE id = ?1',
     )
       .bind(row.program_id)
       .first<ProgramRow>();
+    const connectionRow = await bindings.DB.prepare(
+      `SELECT id, user_id, channel_id, channel_title, access_token_ciphertext,
+         refresh_token_ciphertext, access_token_expires_at, revoked_at
+       FROM youtube_connections WHERE user_id=?1 AND channel_id=?2 AND revoked_at IS NULL`,
+    )
+      .bind(row.program_owner_user_id, row.program_channel_id)
+      .first<{
+        id: string;
+        user_id: string;
+        channel_id: string;
+        channel_title: string;
+        access_token_ciphertext: string;
+        refresh_token_ciphertext: string | null;
+        access_token_expires_at: string;
+        revoked_at: string | null;
+      }>();
+    if (!connectionRow) continue;
+    const connection: YoutubeConnection = {
+      id: connectionRow.id,
+      userId: connectionRow.user_id,
+      channelId: connectionRow.channel_id,
+      channelTitle: connectionRow.channel_title,
+      accessTokenCiphertext: connectionRow.access_token_ciphertext,
+      refreshTokenCiphertext: connectionRow.refresh_token_ciphertext,
+      accessTokenExpiresAt: connectionRow.access_token_expires_at,
+      revokedAt: connectionRow.revoked_at,
+    };
+    try {
+      await usableConnection(connection);
+    } catch {
+      continue;
+    }
     const [audio, cover] = await Promise.all([
       bindings.MEDIA.head(row.audio_key),
       program ? bindings.MEDIA.head(program.cover_key) : null,
@@ -166,10 +224,42 @@ export async function findProgramById(id: string) {
   return result ? programFromRow(result) : null;
 }
 
+export async function findOwnedProgram(
+  id: string,
+  userId: string,
+  channelId: string,
+) {
+  const result = await database()
+    .prepare(
+      `SELECT * FROM programs
+       WHERE id=?1 AND owner_user_id=?2 AND channel_id=?3`,
+    )
+    .bind(id, userId, channelId)
+    .first<ProgramRow>();
+  return result ? programFromRow(result) : null;
+}
+
 export async function findEpisode(guid: string) {
   const result = await database()
     .prepare('SELECT * FROM episodes WHERE guid = ?1')
     .bind(guid)
+    .first<EpisodeRow>();
+  return result ? episodeFromRow(result) : null;
+}
+
+export async function findOwnedEpisode(
+  guid: string,
+  userId: string,
+  channelId: string,
+) {
+  const result = await database()
+    .prepare(
+      `SELECT e.* FROM episodes e
+       JOIN programs p ON p.id=e.program_id
+       WHERE e.guid=?1 AND e.owner_user_id=?2 AND e.owner_user_id=p.owner_user_id
+         AND p.owner_user_id=?2 AND p.channel_id=?3`,
+    )
+    .bind(guid, userId, channelId)
     .first<EpisodeRow>();
   return result ? episodeFromRow(result) : null;
 }

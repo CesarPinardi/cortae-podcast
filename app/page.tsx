@@ -72,6 +72,44 @@ import {
 
 type Screen = 'home' | 'loading' | 'editor' | 'ready';
 type Notice = { tone: 'success' | 'error' | 'info'; text: string } | null;
+type AuthChannel = {
+  id: string;
+  channelId: string;
+  channelTitle: string;
+  revoked: boolean;
+};
+type AuthSession = {
+  authenticated: true;
+  user: { id: string; email: string | null; displayName: string | null };
+  channel: { id: string; channelId: string; title: string } | null;
+  channels: AuthChannel[];
+  csrfToken: string;
+};
+type AuthResponse = AuthSession | { authenticated: false };
+type SourceVerification = {
+  verificationId: string;
+  videoId: string;
+  channelId: string;
+  sourceUrl: string;
+  expiresAt: string;
+};
+type StoredWorkspace = {
+  sourceUrl?: string;
+  sourceVerification?: SourceVerification;
+  program?: Program;
+  episode?: Episode;
+  destinations?: Record<string, Destination>;
+};
+
+class ApiError extends Error {
+  readonly status: number;
+
+  constructor(message: string, status: number) {
+    super(message);
+    this.status = status;
+    this.name = 'ApiError';
+  }
+}
 
 const DURATION = 5554;
 const FALLBACK_TITLE = 'Episódio importado';
@@ -189,6 +227,37 @@ function isoToLocalDateTime(value: string, timeZone: string) {
   return `${parts.year}-${parts.month}-${parts.day}T${parts.hour}:${parts.minute}`;
 }
 
+function isGithubPagesHost() {
+  if (typeof window === 'undefined') return false;
+  return (
+    window.location.hostname === 'github.io' ||
+    window.location.hostname.endsWith('.github.io')
+  );
+}
+
+function sessionOrigin() {
+  return typeof window === 'undefined'
+    ? PODCAST_API_ORIGIN
+    : window.location.origin;
+}
+
+function studioUrl(endpoint: string) {
+  return new URL(endpoint, PODCAST_API_ORIGIN);
+}
+
+function apiUrl(endpoint: string) {
+  return new URL(endpoint, sessionOrigin());
+}
+
+function workspaceStorageKey(session: AuthSession) {
+  const channel = session.channel?.channelId ?? 'sem-canal';
+  return `${STORAGE_KEY}:${encodeURIComponent(session.user.id)}:${encodeURIComponent(channel)}`;
+}
+
+function isAuthenticated(session: AuthResponse): session is AuthSession {
+  return session.authenticated === true;
+}
+
 async function createDefaultCoverFile() {
   const canvas = document.createElement('canvas');
   canvas.width = 1400;
@@ -217,13 +286,23 @@ async function createDefaultCoverFile() {
   return new File([blob], 'capa-cortae.jpg', { type: 'image/jpeg' });
 }
 
-async function apiJson<T>(endpoint: string, init?: RequestInit) {
-  const origin =
-    typeof window !== 'undefined' &&
-    window.location.hostname.endsWith('github.io')
-      ? PODCAST_API_ORIGIN
-      : window.location.origin;
-  const response = await fetch(new URL(endpoint, origin), init);
+async function apiJson<T>(
+  endpoint: string,
+  init: RequestInit = {},
+  csrfToken?: string,
+) {
+  if (isGithubPagesHost())
+    throw new ApiError(
+      'Abra o estúdio hospedado para usar a área autenticada.',
+      0,
+    );
+  const headers = new Headers(init.headers);
+  if (csrfToken) headers.set('x-csrf-token', csrfToken);
+  const response = await fetch(apiUrl(endpoint), {
+    ...init,
+    credentials: 'include',
+    headers,
+  });
   const payload: unknown = await response.json().catch(() => null);
   if (!response.ok) {
     const message =
@@ -238,7 +317,7 @@ async function apiJson<T>(endpoint: string, init?: RequestInit) {
             typeof payload.error === 'string'
           ? payload.error
           : 'A operação não pôde ser concluída.';
-    throw new Error(String(message));
+    throw new ApiError(String(message), response.status);
   }
   return payload as T;
 }
@@ -306,9 +385,21 @@ function TimeField({
 function Header({
   compact = false,
   onHome,
+  auth = null,
+  authLoading = false,
+  loginUrl,
+  onLogout,
+  onDisconnect,
+  onSelectChannel,
 }: {
   compact?: boolean;
   onHome?: () => void;
+  auth?: AuthSession | null;
+  authLoading?: boolean;
+  loginUrl?: string;
+  onLogout?: () => void;
+  onDisconnect?: () => void;
+  onSelectChannel?: (channelId: string) => void;
 }) {
   return (
     <header className="mx-auto flex h-20 max-w-[1480px] items-center justify-between px-5 md:px-10">
@@ -330,8 +421,108 @@ function Header({
         <span className="rounded-full border border-primary/20 bg-primary/10 px-3 py-1.5 text-[11px] font-bold uppercase tracking-wider text-primary">
           Estúdio
         </span>
+        <AuthControls
+          auth={auth}
+          authLoading={authLoading}
+          loginUrl={loginUrl}
+          onDisconnect={onDisconnect}
+          onLogout={onLogout}
+          onSelectChannel={onSelectChannel}
+        />
       </div>
     </header>
+  );
+}
+
+function AuthControls({
+  auth,
+  authLoading,
+  loginUrl,
+  onLogout,
+  onDisconnect,
+  onSelectChannel,
+}: {
+  auth: AuthSession | null;
+  authLoading: boolean;
+  loginUrl?: string;
+  onLogout?: () => void;
+  onDisconnect?: () => void;
+  onSelectChannel?: (channelId: string) => void;
+}) {
+  const availableChannels = auth?.channels.filter((channel) => !channel.revoked) ?? [];
+  if (authLoading)
+    return (
+      <output
+        className="hidden text-xs font-semibold text-muted-foreground sm:inline"
+        aria-live="polite"
+      >
+        Verificando sessão…
+      </output>
+    );
+  if (!auth)
+    return (
+      <a
+        className="rounded-full border border-primary/30 bg-primary px-3 py-1.5 text-xs font-bold text-primary-foreground hover:bg-primary/90"
+        href={loginUrl}
+      >
+        Entrar com Google
+      </a>
+    );
+  return (
+    <div
+      className="flex max-w-[min(58vw,520px)] flex-wrap items-center justify-end gap-2 text-xs"
+      aria-label="Conta e canal conectados"
+    >
+      <span className="hidden max-w-36 truncate text-muted-foreground lg:inline">
+        {auth.user.displayName || auth.user.email || 'Conta Google'}
+      </span>
+      {availableChannels.length > 0 && (
+        <select
+          aria-label="Canal do YouTube"
+          className="max-w-40 rounded-full border border-border bg-secondary px-2.5 py-1.5 text-xs font-semibold"
+          value={auth.channel?.channelId ?? ''}
+          onChange={(event) => onSelectChannel?.(event.target.value)}
+        >
+          <option value="">Selecionar canal</option>
+          {availableChannels.map((channel) => (
+            <option key={channel.channelId} value={channel.channelId}>
+              {channel.channelTitle}
+            </option>
+          ))}
+        </select>
+      )}
+      <output
+        className="hidden items-center gap-1.5 font-semibold text-primary sm:inline-flex"
+        aria-live="polite"
+      >
+        <ShieldCheck className="size-3.5" />
+        {auth.channel ? `Canal: ${auth.channel.title}` : 'Canal não selecionado'}
+      </output>
+      {!auth.channel && (
+        <a
+          className="font-bold text-primary hover:underline"
+          href={loginUrl}
+        >
+          {availableChannels.length ? 'Selecionar canal' : 'Conectar canal'}
+        </a>
+      )}
+      {auth.channel && (
+        <button
+          className="font-semibold text-muted-foreground hover:text-foreground"
+          onClick={onDisconnect}
+          type="button"
+        >
+          Desconectar
+        </button>
+      )}
+      <button
+        className="font-semibold text-muted-foreground hover:text-foreground"
+        onClick={onLogout}
+        type="button"
+      >
+        Sair
+      </button>
+    </div>
   );
 }
 
@@ -354,6 +545,43 @@ function NoticeBanner({ notice }: { notice: Notice }) {
       </span>
       <p>{notice.text}</p>
     </div>
+  );
+}
+
+function VerificationBanner({
+  verification,
+  onReverify,
+  busy,
+}: {
+  verification: SourceVerification | null;
+  onReverify: () => void;
+  busy: boolean;
+}) {
+  if (!verification) return null;
+  return (
+    <output
+      className="mb-6 flex flex-col gap-3 rounded-2xl border border-primary/20 bg-primary/[.06] p-4 text-sm sm:flex-row sm:items-center"
+      aria-live="polite"
+    >
+      <ShieldCheck className="size-5 shrink-0 text-primary" />
+      <span className="min-w-0 flex-1">
+        <span className="block font-semibold">
+          Origem verificada pelo YouTube
+        </span>
+        <span className="mt-1 block truncate text-xs text-muted-foreground">
+          {verification.sourceUrl} · canal {verification.channelId}
+        </span>
+      </span>
+      <Button
+        className="shrink-0 rounded-lg text-xs"
+        disabled={busy}
+        onClick={onReverify}
+        type="button"
+        variant="outline"
+      >
+        <RotateCcw className="size-3.5" /> Verificar novamente
+      </Button>
+    </output>
   );
 }
 
@@ -407,6 +635,8 @@ function DestinationStatusSelect({
 
 export default function Home() {
   const [screen, setScreen] = useState<Screen>('home');
+  const [auth, setAuth] = useState<AuthSession | null>(null);
+  const [authLoading, setAuthLoading] = useState(true);
   const [url, setUrl] = useState('');
   const [urlError, setUrlError] = useState('');
   const [trim, setTrim] = useState([73, 5458]);
@@ -426,7 +656,10 @@ export default function Home() {
   const [coverFile, setCoverFile] = useState<File | null>(null);
   const [audioFile, setAudioFile] = useState<File | null>(null);
   const [audioDuration, setAudioDuration] = useState(0);
+  const [sourceVerification, setSourceVerification] =
+    useState<SourceVerification | null>(null);
   const [publishing, setPublishing] = useState(false);
+  const [loadedWorkspaceKey, setLoadedWorkspaceKey] = useState('');
   const audioInputRef = useRef<HTMLInputElement>(null);
   const uploadedAudioFileRef = useRef<File | null>(null);
 
@@ -435,29 +668,113 @@ export default function Home() {
   const endPercent = (trim[1] / DURATION) * 100;
   const positionPercent = (position / DURATION) * 100;
   const feed = useMemo(
-    () =>
-      typeof window === 'undefined'
-        ? feedUrl(program)
-        : new URL(
-            feedUrl(program),
-            window.location.hostname.endsWith('github.io')
-              ? PODCAST_API_ORIGIN
-              : window.location.origin,
-          ).toString(),
+    () => new URL(feedUrl(program), PODCAST_API_ORIGIN).toString(),
     [program],
   );
   const publicEpisodes = episode?.status === 'published' ? 1 : 0;
+  const displayedVerification =
+    sourceVerification ??
+    (episode?.sourceVerificationId &&
+    episode.sourceVideoId &&
+    episode.sourceChannelId &&
+    episode.sourceUrl
+      ? {
+          verificationId: episode.sourceVerificationId,
+          videoId: episode.sourceVideoId,
+          channelId: episode.sourceChannelId,
+          sourceUrl: episode.sourceUrl,
+          expiresAt: '',
+        }
+      : null);
+  const currentWorkspaceKey = auth
+    ? workspaceStorageKey(auth)
+    : `${STORAGE_KEY}:anonymous`;
+  const hasAuth = auth !== null;
+  const loginUrl = studioUrl('/api/auth/google').toString();
+  const headerProps = {
+    auth,
+    authLoading,
+    loginUrl,
+    onDisconnect: disconnectYoutube,
+    onLogout: logout,
+    onSelectChannel: selectChannel,
+  };
+
+  function resetWorkspace() {
+    setScreen('home');
+    setNotice(null);
+    setUrl('');
+    setUrlError('');
+    setEpisodeTitle(FALLBACK_TITLE);
+    setProgram(DEFAULT_PROGRAM);
+    setEpisode(null);
+    setDestinations(DEFAULT_DESTINATIONS);
+    setCoverFile(null);
+    setAudioFile(null);
+    setAudioDuration(0);
+    setSourceVerification(null);
+    uploadedAudioFileRef.current = null;
+  }
 
   useEffect(() => {
-    try {
-      const raw = window.localStorage.getItem(STORAGE_KEY);
-      if (raw) {
-        const saved = JSON.parse(raw) as {
-          program?: Program;
-          episode?: Episode;
-          destinations?: Record<string, Destination>;
-        };
-        startTransition(() => {
+    let active = true;
+    if (isGithubPagesHost()) {
+      const timer = window.setTimeout(() => {
+        if (!active) return;
+        setAuth(null);
+        setAuthLoading(false);
+      }, 0);
+      return () => {
+        active = false;
+        window.clearTimeout(timer);
+      };
+    }
+    const load = async (initial: boolean) => {
+      try {
+        const next = await apiJson<AuthResponse>('/api/auth/session');
+        if (!active) return;
+        setAuth(isAuthenticated(next) ? next : null);
+      } catch {
+        if (!active) return;
+        if (initial)
+          setNotice({
+            tone: 'error',
+            text: 'Não foi possível consultar a sessão. Tente novamente.',
+          });
+        setAuth(null);
+      } finally {
+        if (active && initial) setAuthLoading(false);
+      }
+    };
+    void load(true);
+    const timer = window.setInterval(() => void load(false), 60_000);
+    return () => {
+      active = false;
+      window.clearInterval(timer);
+    };
+  }, []);
+
+  useEffect(() => {
+    let active = true;
+    window.localStorage.removeItem(STORAGE_KEY);
+    queueMicrotask(() => {
+      if (!active) return;
+      let saved: StoredWorkspace | null = null;
+      let failed = false;
+      try {
+        if (hasAuth) {
+          const raw = window.localStorage.getItem(currentWorkspaceKey);
+          if (raw) saved = JSON.parse(raw) as StoredWorkspace;
+        }
+      } catch {
+        failed = true;
+      }
+      startTransition(() => {
+        resetWorkspace();
+        if (saved) {
+          if (saved.sourceUrl) setUrl(saved.sourceUrl);
+          if (saved.sourceVerification)
+            setSourceVerification(saved.sourceVerification);
           if (saved.program)
             setProgram({ ...DEFAULT_PROGRAM, ...saved.program });
           if (saved.episode) {
@@ -466,26 +783,179 @@ export default function Home() {
           }
           if (saved.destinations)
             setDestinations({ ...DEFAULT_DESTINATIONS, ...saved.destinations });
-        });
-      }
-    } catch {
-      startTransition(() =>
-        setNotice({
-          tone: 'info',
-          text: 'Não foi possível recuperar o rascunho salvo. Você pode continuar normalmente.',
-        }),
-      );
-    }
-    startTransition(() => setHydrated(true));
-  }, []);
+        }
+        if (failed)
+          setNotice({
+            tone: 'info',
+            text: 'Não foi possível recuperar o rascunho desta conta. Você pode continuar normalmente.',
+          });
+        setLoadedWorkspaceKey(currentWorkspaceKey);
+        setHydrated(true);
+      });
+    });
+    return () => {
+      active = false;
+    };
+  }, [currentWorkspaceKey, hasAuth]);
 
   useEffect(() => {
-    if (!hydrated) return;
+    if (!hydrated || loadedWorkspaceKey !== currentWorkspaceKey || !auth)
+      return;
     window.localStorage.setItem(
-      STORAGE_KEY,
-      JSON.stringify({ program, episode, destinations }),
+      currentWorkspaceKey,
+      JSON.stringify({
+        sourceUrl: url,
+        sourceVerification,
+        program,
+        episode,
+        destinations,
+      }),
     );
-  }, [hydrated, program, episode, destinations]);
+  }, [
+    auth,
+    currentWorkspaceKey,
+    destinations,
+    episode,
+    hydrated,
+    loadedWorkspaceKey,
+    program,
+    sourceVerification,
+    url,
+  ]);
+
+  async function selectChannel(channelId: string) {
+    if (!channelId || !auth) return;
+    const previousWorkspaceKey = currentWorkspaceKey;
+    setLoadedWorkspaceKey('');
+    resetWorkspace();
+    try {
+      const selected = await apiJson<{
+        channel: { id: string; channelId: string; title: string };
+      }>(
+        '/api/auth/channel',
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ channelId }),
+        },
+        auth.csrfToken,
+      );
+      setAuth((current) =>
+        current ? { ...current, channel: selected.channel } : current,
+      );
+    } catch (caught) {
+      setLoadedWorkspaceKey(previousWorkspaceKey);
+      setNotice({
+        tone: 'error',
+        text:
+          caught instanceof Error
+            ? caught.message
+            : 'Não foi possível selecionar o canal.',
+      });
+    }
+  }
+
+  async function refreshSession() {
+    const next = await apiJson<AuthResponse>('/api/auth/session');
+    setAuth(isAuthenticated(next) ? next : null);
+    return next;
+  }
+
+  async function disconnectYoutube() {
+    if (!auth) return;
+    try {
+      await apiJson('/api/auth/youtube', { method: 'DELETE' }, auth.csrfToken);
+      await refreshSession();
+      setNotice({
+        tone: 'info',
+        text: 'Canal desconectado. Conecte novamente para continuar administrando.',
+      });
+    } catch (caught) {
+      setNotice({
+        tone: 'error',
+        text:
+          caught instanceof Error
+            ? caught.message
+            : 'Não foi possível desconectar o canal.',
+      });
+    }
+  }
+
+  async function logout() {
+    if (!auth) return;
+    try {
+      await apiJson('/api/auth/logout', { method: 'POST' }, auth.csrfToken);
+      setAuth(null);
+      resetWorkspace();
+      setLoadedWorkspaceKey('');
+      setNotice({
+        tone: 'success',
+        text: 'Sessão encerrada. Os dados privados desta conta não ficam visíveis.',
+      });
+    } catch (caught) {
+      setNotice({
+        tone: 'error',
+        text:
+          caught instanceof Error
+            ? caught.message
+            : 'Não foi possível encerrar a sessão.',
+      });
+    }
+  }
+
+  async function verifySource(programId: string, sourceUrl: string) {
+    if (!auth?.channel) throw new Error('Selecione um canal do YouTube primeiro.');
+    const verification = await apiJson<SourceVerification>(
+      '/api/youtube/verify',
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ programId, sourceUrl }),
+      },
+      auth.csrfToken,
+    );
+    setSourceVerification(verification);
+    return verification;
+  }
+
+  async function reverifySource() {
+    if (!program.id || !url) {
+      setNotice({
+        tone: 'error',
+        text: 'Informe a URL do vídeo para verificar a origem.',
+      });
+      return;
+    }
+    setPublishing(true);
+    try {
+      const verification = await verifySource(program.id, url);
+      setEpisode((current) =>
+        current
+          ? {
+              ...current,
+              sourceUrl: verification.sourceUrl,
+              sourceVideoId: verification.videoId,
+              sourceChannelId: verification.channelId,
+              sourceVerificationId: verification.verificationId,
+            }
+          : current,
+      );
+      setNotice({
+        tone: 'success',
+        text: 'Origem verificada novamente para o canal selecionado.',
+      });
+    } catch (caught) {
+      setNotice({
+        tone: 'error',
+        text:
+          caught instanceof Error
+            ? caught.message
+            : 'Não foi possível verificar a origem.',
+      });
+    } finally {
+      setPublishing(false);
+    }
+  }
 
   useEffect(() => {
     if (!playing || position >= trim[1]) return;
@@ -515,19 +985,45 @@ export default function Home() {
 
   async function importEpisode(event: React.SyntheticEvent<HTMLFormElement>) {
     event.preventDefault();
+    if (!auth?.channel) {
+      setNotice({
+        tone: 'error',
+        text: 'Entre com Google e selecione um canal antes de importar.',
+      });
+      return;
+    }
     const youtubeUrl = url.trim();
-    if (!/^https?:\/\/(www\.)?(youtube\.com|youtu\.be)\//i.test(youtubeUrl)) {
+    if (!/^https:\/\/(www\.)?(youtube\.com|youtu\.be)\//i.test(youtubeUrl)) {
       setUrlError('Cole um link válido do YouTube.');
       return;
     }
     setUrlError('');
     setScreen('loading');
-    const [title] = await Promise.all([
-      getYoutubeTitle(youtubeUrl).catch(() => FALLBACK_TITLE),
-      new Promise((resolve) => window.setTimeout(resolve, 1700)),
-    ]);
-    setEpisodeTitle(title);
-    setScreen('editor');
+    try {
+      const savedProgram = await saveProgram();
+      const verification = await verifySource(savedProgram.id, youtubeUrl);
+      const [title] = await Promise.all([
+        getYoutubeTitle(youtubeUrl).catch(() => FALLBACK_TITLE),
+        new Promise((resolve) => window.setTimeout(resolve, 600)),
+      ]);
+      setEpisodeTitle(title);
+      setProgram((current) => ({
+        ...current,
+        id: savedProgram.id,
+        slug: savedProgram.slug,
+      }));
+      setSourceVerification(verification);
+      setScreen('editor');
+    } catch (caught) {
+      setScreen('home');
+      setNotice({
+        tone: 'error',
+        text:
+          caught instanceof Error
+            ? caught.message
+            : 'Não foi possível verificar a origem do vídeo.',
+      });
+    }
   }
 
   function beginExport() {
@@ -545,15 +1041,27 @@ export default function Home() {
       });
       return;
     }
-    setEpisode(
-      createEpisode(
+    if (!sourceVerification || !program.id) {
+      setNotice({
+        tone: 'error',
+        text: 'Verifique a origem do vídeo antes de preparar o episódio.',
+      });
+      return;
+    }
+    setEpisode({
+      ...createEpisode(
         episodeTitle,
         audioFile.name,
         audioDuration,
         audioFile.size,
         audioFile.type,
       ),
-    );
+      programId: program.id,
+      sourceUrl: sourceVerification.sourceUrl,
+      sourceVideoId: sourceVerification.videoId,
+      sourceChannelId: sourceVerification.channelId,
+      sourceVerificationId: sourceVerification.verificationId,
+    });
     setScreen('ready');
   }
   function readAudioDuration(file: File) {
@@ -633,13 +1141,19 @@ export default function Home() {
     form.set('email', program.email);
     form.set('explicit', String(program.explicit));
     form.set('slug', program.slug || slugify(program.title));
-    const cover = coverFile ?? (await createDefaultCoverFile());
-    if (!coverFile) setCoverFile(cover);
-    form.set('cover', cover);
-    const saved = await apiJson<{ id: string; slug: string }>('/api/programs', {
-      method: 'POST',
-      body: form,
-    });
+    const cover = coverFile ?? (!program.id ? await createDefaultCoverFile() : null);
+    if (cover) {
+      if (!coverFile) setCoverFile(cover);
+      form.set('cover', cover);
+    }
+    const saved = await apiJson<{ id: string; slug: string }>(
+      program.id ? `/api/programs/${program.id}` : '/api/programs',
+      {
+        method: program.id ? 'PATCH' : 'POST',
+        body: form,
+      },
+      auth?.csrfToken,
+    );
     setProgram((current) => ({ ...current, id: saved.id, slug: saved.slug }));
     return saved;
   }
@@ -653,12 +1167,18 @@ export default function Home() {
         guid: string;
         audioKey: string;
         mediaPath: string;
+        sourceUrl: string;
+        sourceVideoId: string;
+        sourceChannelId: string;
+        sourceVerificationId: string;
       }>('/api/episodes', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({
           programId: savedProgram.id,
-          sourceUrl: url || 'https://www.youtube.com/',
+          sourceUrl: hosted.sourceUrl || url,
+          verificationId:
+            hosted.sourceVerificationId || sourceVerification?.verificationId,
           title: hosted.title,
           description: hosted.description,
           kind: hosted.kind,
@@ -672,31 +1192,48 @@ export default function Home() {
           sizeBytes: hosted.sizeBytes,
           duration: hosted.duration,
         }),
-      });
+      }, auth?.csrfToken);
       hosted = {
         ...hosted,
         guid: created.guid,
         programId: savedProgram.id,
         audioKey: created.audioKey,
         enclosureUrl: created.mediaPath,
+        sourceUrl: created.sourceUrl,
+        sourceVideoId: created.sourceVideoId,
+        sourceChannelId: created.sourceChannelId,
+        sourceVerificationId: created.sourceVerificationId,
       };
       setEpisode(hosted);
     } else {
-      await apiJson(`/api/episodes/${hosted.guid}`, {
-        method: 'PATCH',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({
-          title: hosted.title,
-          description: hosted.description,
-          kind: hosted.kind,
-          season: hosted.season,
-          number: hosted.number,
-          explicit: hosted.explicit,
-          timezone: hosted.timezone,
-          publishAt: hosted.publishAt,
-          audioName: hosted.audioName,
-        }),
-      });
+      const sourceChanged =
+        sourceVerification &&
+        sourceVerification.verificationId !== hosted.sourceVerificationId;
+      await apiJson(
+        `/api/episodes/${hosted.guid}`,
+        {
+          method: 'PATCH',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            title: hosted.title,
+            description: hosted.description,
+            kind: hosted.kind,
+            season: hosted.season,
+            number: hosted.number,
+            explicit: hosted.explicit,
+            timezone: hosted.timezone,
+            publishAt: hosted.publishAt,
+            audioName: hosted.audioName,
+            ...(sourceChanged
+              ? {
+                  sourceUrl: sourceVerification.sourceUrl,
+                  verificationId: sourceVerification.verificationId,
+                }
+              : {}),
+          }),
+        },
+        auth?.csrfToken,
+      );
     }
     if (audioFile && uploadedAudioFileRef.current !== audioFile) {
       const uploaded = await apiJson<{
@@ -712,7 +1249,7 @@ export default function Home() {
           'x-audio-duration-seconds': String(audioDuration),
         },
         body: audioFile,
-      });
+      }, auth?.csrfToken);
       hosted = {
         ...hosted,
         sizeBytes: uploaded.sizeBytes,
@@ -736,7 +1273,7 @@ export default function Home() {
         method: 'PATCH',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ publishAt: '', status: 'draft' }),
-      });
+      }, auth?.csrfToken);
       setEpisode({ ...hosted, status: 'draft', publishAt: '' });
       setNotice({
         tone: 'success',
@@ -768,6 +1305,7 @@ export default function Home() {
       const published = await apiJson<{ publishedAt: string }>(
         `/api/episodes/${hosted.guid}/publish`,
         { method: 'POST' },
+        auth?.csrfToken,
       );
       setEpisode({
         ...hosted,
@@ -818,6 +1356,7 @@ export default function Home() {
       const scheduled = await apiJson<{ status: EpisodeStatus }>(
         `/api/episodes/${hosted.guid}/schedule`,
         { method: 'POST' },
+        auth?.csrfToken,
       );
       setEpisode({ ...hosted, status: scheduled.status });
       setNotice({
@@ -841,7 +1380,7 @@ export default function Home() {
     try {
       await apiJson(`/api/episodes/${episode.guid}/schedule`, {
         method: 'DELETE',
-      });
+      }, auth?.csrfToken);
       setEpisode({ ...episode, status: 'draft', publishAt: '' });
       setNotice({
         tone: 'info',
@@ -902,10 +1441,27 @@ export default function Home() {
       text: 'O arquivo não está mais neste dispositivo. Selecione-o novamente para baixar.',
     });
   }
+  if (authLoading || loadedWorkspaceKey !== currentWorkspaceKey)
+    return (
+      <main className="min-h-screen bg-background text-foreground">
+        <Header {...headerProps} />
+        <output
+          className="mx-auto grid min-h-[calc(100vh-80px)] max-w-xl place-items-center px-5 pb-24 text-center"
+          aria-live="polite"
+        >
+          <span className="block">
+            <LoaderCircle className="mx-auto size-9 animate-spin text-primary" />
+            <span className="mt-5 block text-sm font-semibold">
+              {authLoading ? 'Verificando sua sessão…' : 'Carregando seu espaço seguro…'}
+            </span>
+          </span>
+        </output>
+      </main>
+    );
   if (screen === 'home')
     return (
       <main className="min-h-screen bg-background text-foreground">
-        <Header />
+        <Header {...headerProps} />
         <section className="mx-auto grid max-w-[1480px] gap-8 px-5 pb-12 pt-8 md:px-10 lg:grid-cols-[minmax(0,1.12fr)_minmax(380px,.88fr)] lg:items-end lg:pb-20 lg:pt-16">
           <div className="max-w-4xl">
             <div className="eyebrow">
@@ -960,9 +1516,17 @@ export default function Home() {
                 {urlError}
               </p>
             )}
+            {!auth?.channel && !authLoading && (
+              <p
+                className="mt-3 text-xs font-semibold text-amber-200"
+                role="alert"
+              >
+                Entre com Google e selecione um canal verificado para importar.
+              </p>
+            )}
             <Button
               className="mt-4 h-14 w-full rounded-xl text-base font-bold"
-              disabled={!url.trim()}
+              disabled={!url.trim() || !auth?.channel || authLoading}
               type="submit"
             >
               Importar live <ArrowRight className="size-4" />
@@ -997,7 +1561,7 @@ export default function Home() {
   if (screen === 'loading')
     return (
       <main className="min-h-screen">
-        <Header compact onHome={goHome} />
+        <Header {...headerProps} compact onHome={goHome} />
         <div className="mx-auto grid min-h-[calc(100vh-80px)] max-w-xl place-items-center px-5 pb-24 text-center">
           <div className="w-full">
             <span className="mx-auto grid size-20 place-items-center rounded-full border border-primary/30 bg-primary/10 text-primary">
@@ -1022,7 +1586,7 @@ export default function Home() {
   if (screen === 'ready')
     return (
       <main className="min-h-screen">
-        <Header compact onHome={goHome} />
+        <Header {...headerProps} compact onHome={goHome} />
         <div className="mx-auto max-w-[1480px] px-5 pb-16 md:px-10">
           <div className="mb-8 flex flex-col justify-between gap-5 border-b border-border pb-7 pt-4 md:flex-row md:items-end">
             <div>
@@ -1043,6 +1607,11 @@ export default function Home() {
             </div>
           </div>
           <NoticeBanner notice={notice} />
+          <VerificationBanner
+            busy={publishing}
+            onReverify={reverifySource}
+            verification={displayedVerification}
+          />
           <div className="mb-7 grid gap-3 sm:grid-cols-3">
             <div className="metric-card">
               <span>Feed</span>
@@ -1713,7 +2282,7 @@ export default function Home() {
 
   return (
     <main className="min-h-screen">
-      <Header compact onHome={goHome} />
+      <Header {...headerProps} compact onHome={goHome} />
       <div className="mx-auto max-w-[1320px] px-5 pb-12 md:px-10">
         <button
           className="mb-6 inline-flex items-center gap-2 text-sm font-semibold text-muted-foreground hover:text-foreground"
@@ -1738,6 +2307,11 @@ export default function Home() {
           </div>
         </div>
         <NoticeBanner notice={notice} />
+        <VerificationBanner
+          busy={publishing}
+          onReverify={reverifySource}
+          verification={displayedVerification}
+        />
         <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_330px]">
           <section className="rounded-3xl border border-border bg-card p-5 md:p-8">
             <div className="flex items-center justify-between gap-4">

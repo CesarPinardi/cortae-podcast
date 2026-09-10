@@ -3,6 +3,16 @@
 interface __BaseEnv_Env {
   MEDIA: R2Bucket;
   DB: D1Database;
+  GOOGLE_CLIENT_ID: string;
+  GOOGLE_CLIENT_SECRET: string;
+  AUTH_ENCRYPTION_KEY: string;
+  APP_ORIGIN?: string;
+  GOOGLE_AUTH_URL?: string;
+  GOOGLE_TOKEN_URL?: string;
+  GOOGLE_JWKS_URL?: string;
+  GOOGLE_REVOKE_URL?: string;
+  YOUTUBE_API_BASE_URL?: string;
+  OWNERSHIP_ADMIN_TOKEN?: string;
 }
 declare namespace Cloudflare {
   interface GlobalProps {
