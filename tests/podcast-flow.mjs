@@ -1,6 +1,22 @@
 import assert from 'node:assert/strict';
 
 const baseUrl = process.env.TEST_BASE_URL ?? 'http://localhost:3000';
+const authCookie = process.env.TEST_AUTH_COOKIE;
+const csrfToken = process.env.TEST_CSRF_TOKEN;
+const authHeaders = () =>
+  authCookie && csrfToken
+    ? { cookie: authCookie, 'x-csrf-token': csrfToken }
+    : {};
+if (!authCookie || !csrfToken) {
+  const protectedResponse = await fetch(`${baseUrl}/api/programs`, {
+    method: 'POST',
+  });
+  assert.equal(protectedResponse.status, 401);
+  console.log(
+    'Guardas de autenticação HTTP passaram; fluxo completo requer sessão de teste.',
+  );
+  process.exit(0);
+}
 const slug = `fluxo-audio-${Date.now()}`;
 const coverBytes = new Uint8Array(26);
 coverBytes.set([137, 80, 78, 71, 13, 10, 26, 10]);
@@ -25,7 +41,7 @@ async function createEpisode(programId, suffix) {
   return responseJson(
     await fetch(`${baseUrl}/api/episodes`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: { 'content-type': 'application/json', ...authHeaders() },
       body: JSON.stringify({
         programId,
         sourceUrl: 'https://www.youtube.com/watch?v=fixture',
@@ -57,6 +73,7 @@ programForm.set(
 const program = await responseJson(
   await fetch(`${baseUrl}/api/programs`, {
     method: 'POST',
+    headers: authHeaders(),
     body: programForm,
   }),
 );
@@ -64,12 +81,14 @@ const program = await responseJson(
 const missingAudio = await createEpisode(program.id, 'sem-audio');
 await fetch(`${baseUrl}/api/episodes/${missingAudio.guid}`, {
   method: 'PATCH',
-  headers: { 'content-type': 'application/json' },
-  body: JSON.stringify({ publishAt: new Date(Date.now() + 60_000).toISOString() }),
+  headers: { 'content-type': 'application/json', ...authHeaders() },
+  body: JSON.stringify({
+    publishAt: new Date(Date.now() + 60_000).toISOString(),
+  }),
 });
 const missingSchedule = await fetch(
   `${baseUrl}/api/episodes/${missingAudio.guid}/schedule`,
-  { method: 'POST' },
+  { method: 'POST', headers: authHeaders() },
 );
 assert.equal(missingSchedule.status, 422);
 
@@ -79,6 +98,7 @@ const invalidUpload = await fetch(
   {
     method: 'POST',
     headers: {
+      ...authHeaders(),
       'content-type': 'audio/mpeg',
       'x-audio-duration-seconds': '321',
     },
@@ -91,6 +111,7 @@ const uploaded = await responseJson(
   await fetch(`${baseUrl}/api/episodes/${episode.guid}/audio`, {
     method: 'POST',
     headers: {
+      ...authHeaders(),
       'content-type': 'audio/mpeg',
       'x-audio-duration-seconds': '321',
     },
@@ -102,7 +123,9 @@ assert.equal(uploaded.mimeType, 'audio/mpeg');
 assert.equal(uploaded.duration, 321);
 
 const persisted = await responseJson(
-  await fetch(`${baseUrl}/api/episodes/${episode.guid}`),
+  await fetch(`${baseUrl}/api/episodes/${episode.guid}`, {
+    headers: authHeaders(),
+  }),
 );
 assert.equal(persisted.duration, 321);
 assert.equal(persisted.audioKey, uploaded.audioKey);
@@ -110,6 +133,7 @@ assert.equal(persisted.audioKey, uploaded.audioKey);
 const published = await responseJson(
   await fetch(`${baseUrl}/api/episodes/${episode.guid}/publish`, {
     method: 'POST',
+    headers: authHeaders(),
   }),
 );
 assert.equal(published.status, 'published');

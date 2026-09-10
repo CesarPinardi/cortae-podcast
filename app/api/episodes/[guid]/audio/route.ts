@@ -1,21 +1,43 @@
 import { env } from 'cloudflare:workers';
 import { isAcceptedAudioType, MAX_AUDIO_BYTES } from '@/lib/podcast';
+import {
+  requireAuth,
+  providerFailureResponse,
+  usableConnection,
+} from '@/lib/server/auth';
 import { hasValidAudioSignature, readAudioSignature } from '@/lib/server/audio';
 import { error, json, safeSegment } from '@/lib/server/http';
-import { findEpisode } from '@/lib/server/podcast-db';
+import { findOwnedEpisode } from '@/lib/server/podcast-db';
 
 export async function POST(
   request: Request,
   context: { params: Promise<{ guid: string }> | { guid: string } },
 ) {
+  const auth = await requireAuth(request, { csrf: true, channel: true });
+  if ('response' in auth) return auth.response;
   const { guid } = await Promise.resolve(context.params);
-  const episode = await findEpisode(guid);
+  const episode = await findOwnedEpisode(
+    guid,
+    auth.context.userId,
+    auth.context.connection?.channelId ?? '',
+  );
   if (!episode) return error('Episódio não encontrado.', 404);
+  if (
+    !episode.sourceVideoId ||
+    !episode.sourceChannelId ||
+    !episode.sourceVerificationId
+  )
+    return error('Verifique a origem do episódio antes do upload.', 422);
   if (episode.status === 'published')
     return error(
       'O áudio já publicado não pode ser substituído. Crie uma nova versão do episódio.',
       409,
     );
+  try {
+    await usableConnection(auth.context.connection!);
+  } catch (cause) {
+    return providerFailureResponse(cause);
+  }
   const contentType = request.headers.get('content-type')?.split(';')[0] ?? '';
   if (!isAcceptedAudioType(contentType))
     return error('Envie um arquivo MP3, M4A ou AAC.', 415);
@@ -37,7 +59,10 @@ export async function POST(
   const signature = await readAudioSignature(signatureBody);
   if (!hasValidAudioSignature(contentType, signature)) {
     await uploadBody.cancel();
-    return error('O conteúdo do arquivo não corresponde ao formato informado.', 415);
+    return error(
+      'O conteúdo do arquivo não corresponde ao formato informado.',
+      415,
+    );
   }
   const audioKey = `audio/${episode.programId}/${guid}/${crypto.randomUUID()}-${safeSegment(episode.audioName)}`;
   const object = await env.MEDIA.put(audioKey, uploadBody, {
@@ -48,12 +73,16 @@ export async function POST(
   });
   if (object.size !== contentLength) {
     await env.MEDIA.delete(audioKey);
-    return error('O tamanho do upload não corresponde ao arquivo enviado.', 400);
+    return error(
+      'O tamanho do upload não corresponde ao arquivo enviado.',
+      400,
+    );
   }
   const now = new Date().toISOString();
   const result = await env.DB.prepare(
-    `UPDATE episodes SET audio_key=?1, audio_etag=?2, mime_type=?3, size_bytes=?4, duration_seconds=?5,
-      status=?6, updated_at=?7 WHERE guid=?8 AND status <> 'published' AND audio_key=?9`,
+    `UPDATE episodes SET audio_key=?1, audio_etag=?2, mime_type=?3, size_bytes=?4,
+       duration_seconds=?5, status=?6, updated_at=?7
+     WHERE guid=?8 AND owner_user_id=?9 AND status <> 'published' AND audio_key=?10`,
   )
     .bind(
       audioKey,
@@ -64,6 +93,7 @@ export async function POST(
       'ready',
       now,
       guid,
+      auth.context.userId,
       episode.audioKey,
     )
     .run();

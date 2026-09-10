@@ -3,7 +3,6 @@ import { absoluteUrl } from '@/lib/server/http';
 import {
   findPublishedEpisodes,
   findProgram,
-  publishDueEpisodes,
 } from '@/lib/server/podcast-db';
 
 function feedXml(
@@ -30,7 +29,6 @@ export async function GET(
   const { slug } = await Promise.resolve(context.params);
   const program = await findProgram(slug);
   if (!program) return new Response('Feed não encontrado.', { status: 404 });
-  await publishDueEpisodes();
   const episodes = await findPublishedEpisodes(
     program.id,
     new Date().toISOString(),

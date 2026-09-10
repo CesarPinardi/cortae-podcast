@@ -1,13 +1,24 @@
 import { env } from 'cloudflare:workers';
+import {
+  requireAuth,
+  providerFailureResponse,
+  usableConnection,
+} from '@/lib/server/auth';
 import { error, json } from '@/lib/server/http';
-import { findEpisode, findProgramById } from '@/lib/server/podcast-db';
+import { findOwnedEpisode, findOwnedProgram } from '@/lib/server/podcast-db';
 
 export async function POST(
   request: Request,
   context: { params: Promise<{ guid: string }> | { guid: string } },
 ) {
+  const auth = await requireAuth(request, { csrf: true, channel: true });
+  if ('response' in auth) return auth.response;
   const { guid } = await Promise.resolve(context.params);
-  const episode = await findEpisode(guid);
+  const episode = await findOwnedEpisode(
+    guid,
+    auth.context.userId,
+    auth.context.connection?.channelId ?? '',
+  );
   if (!episode) return error('Episódio não encontrado.', 404);
   if (episode.status === 'published' && episode.publishedAt)
     return json({
@@ -15,7 +26,26 @@ export async function POST(
       status: 'published',
       publishedAt: episode.publishedAt,
     });
-  const program = await findProgramById(episode.programId);
+  if (
+    !episode.sourceVideoId ||
+    !episode.sourceChannelId ||
+    !episode.sourceVerificationId ||
+    episode.sourceChannelId !== auth.context.connection?.channelId
+  )
+    return error(
+      'A origem do episódio não está verificada para este canal.',
+      403,
+    );
+  try {
+    await usableConnection(auth.context.connection!);
+  } catch (cause) {
+    return providerFailureResponse(cause);
+  }
+  const program = await findOwnedProgram(
+    episode.programId ?? '',
+    auth.context.userId,
+    auth.context.connection?.channelId ?? '',
+  );
   const [audio, cover] = await Promise.all([
     env.MEDIA.head(episode.audioKey),
     program ? env.MEDIA.head(program.coverKey) : null,
@@ -38,12 +68,24 @@ export async function POST(
   const now = new Date().toISOString();
   const result = await env.DB.prepare(
     `UPDATE episodes SET status='published', publish_at=NULL, published_at=?1, updated_at=?1
-     WHERE guid=?2 AND status IN ('draft', 'ready', 'scheduled') AND audio_key=?3 AND size_bytes=?4`,
+     WHERE guid=?2 AND owner_user_id=?3 AND status IN ('draft', 'ready', 'scheduled')
+       AND source_channel_id=?4 AND audio_key=?5 AND size_bytes=?6`,
   )
-    .bind(now, guid, episode.audioKey, episode.sizeBytes)
+    .bind(
+      now,
+      guid,
+      auth.context.userId,
+      auth.context.connection?.channelId,
+      episode.audioKey,
+      episode.sizeBytes,
+    )
     .run();
   if (!result.meta.changes) {
-    const latest = await findEpisode(guid);
+    const latest = await findOwnedEpisode(
+      guid,
+      auth.context.userId,
+      auth.context.connection?.channelId ?? '',
+    );
     if (latest?.status === 'published' && latest.publishedAt)
       return json({
         guid,

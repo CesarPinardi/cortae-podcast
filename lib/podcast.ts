@@ -13,7 +13,11 @@ export type DestinationStatus =
   | 'problem';
 
 export const MAX_AUDIO_BYTES = 1_000_000_000;
-export const AUDIO_MIME_TYPES = ['audio/mpeg', 'audio/mp4', 'audio/aac'] as const;
+export const AUDIO_MIME_TYPES = [
+  'audio/mpeg',
+  'audio/mp4',
+  'audio/aac',
+] as const;
 export const AUDIO_FILE_ACCEPT = `${AUDIO_MIME_TYPES.join(',')},.mp3,.m4a,.aac`;
 
 export function isAcceptedAudioType(value: string) {
@@ -22,6 +26,8 @@ export function isAcceptedAudioType(value: string) {
 
 export type Program = {
   id?: string;
+  ownerUserId?: string | null;
+  channelId?: string | null;
   title: string;
   description: string;
   author: string;
@@ -55,7 +61,11 @@ export type Episode = {
   duration: number;
   enclosureUrl: string;
   programId?: string;
+  ownerUserId?: string | null;
   sourceUrl?: string;
+  sourceVideoId?: string | null;
+  sourceChannelId?: string | null;
+  sourceVerificationId?: string | null;
   audioKey?: string;
   audioEtag?: string;
   updatedAt?: string;

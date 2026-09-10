@@ -18,7 +18,8 @@ const worker = {
       return new Response(null, {
         status: 204,
         headers: {
-          'access-control-allow-headers': 'content-type',
+          'access-control-allow-credentials': 'true',
+          'access-control-allow-headers': 'content-type, x-csrf-token',
           'access-control-allow-methods':
             'DELETE, GET, HEAD, OPTIONS, PATCH, POST',
           'access-control-allow-origin': origin,
@@ -30,6 +31,7 @@ const worker = {
     if (!origin) return response;
     const headers = new Headers(response.headers);
     headers.set('access-control-allow-origin', origin);
+    headers.set('access-control-allow-credentials', 'true');
     headers.set(
       'access-control-expose-headers',
       'accept-ranges, content-length, content-range, etag, last-modified',
