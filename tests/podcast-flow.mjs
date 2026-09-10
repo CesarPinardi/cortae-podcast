@@ -1,15 +1,35 @@
 import assert from 'node:assert/strict';
 
 const baseUrl = process.env.TEST_BASE_URL ?? 'http://localhost:3000';
+const testMode = process.env.TEST_MODE ?? 'full';
 const authCookie = process.env.TEST_AUTH_COOKIE;
 const csrfToken = process.env.TEST_CSRF_TOKEN;
 const authHeaders = (cookie = authCookie, token = csrfToken) =>
   cookie && token ? { cookie, 'x-csrf-token': token } : {};
 
+assert.ok(
+  ['anonymous', 'authenticated', 'full'].includes(testMode),
+  'TEST_MODE deve ser anonymous, authenticated ou full.',
+);
+if (testMode === 'anonymous') {
+  assert.equal(
+    authCookie ?? csrfToken,
+    undefined,
+    'TEST_MODE=anonymous não aceita credenciais de sessão.',
+  );
+} else {
+  assert.ok(
+    authCookie && csrfToken,
+    'TEST_MODE autenticado exige TEST_AUTH_COOKIE e TEST_CSRF_TOKEN.',
+  );
+}
+
+// TEST_MODE: anonymous, authenticated ou full (padrão full). Modos autenticados
+// falham se credenciais/fixtures exigidas não estiverem configuradas.
 // TEST_BASE_URL: servidor HTTP do teste (padrão http://localhost:3000).
-// TEST_AUTH_COOKIE e TEST_CSRF_TOKEN: sessão válida para o fluxo completo.
+// TEST_AUTH_COOKIE e TEST_CSRF_TOKEN: sessão válida para o fluxo autenticado.
 // TEST_AUTH_COOKIE_A/B e TEST_CSRF_TOKEN_A/B: duas sessões válidas, cada uma
-// ligada a um canal distinto, para o cenário opcional de isolamento.
+// ligada a um canal distinto, exigidas por TEST_MODE=full.
 // TEST_CROSS_PROGRAM_ID, TEST_CROSS_PROGRAM_SLUG e TEST_CROSS_EPISODE_GUID:
 // fixture pertencente à sessão A usado nas tentativas da sessão B.
 
@@ -57,8 +77,8 @@ async function assertAnonymousProtection() {
 
 await assertAnonymousProtection();
 
-if (!authCookie || !csrfToken) {
-  console.log('Guardas HTTP anônimas passaram; sessão não configurada.');
+if (testMode === 'anonymous') {
+  console.log('Guardas HTTP anônimas passaram.');
 } else {
 const slug = `fluxo-audio-${Date.now()}`;
 const coverBytes = new Uint8Array(26);
@@ -218,7 +238,25 @@ const crossProgramId = process.env.TEST_CROSS_PROGRAM_ID;
 const crossProgramSlug = process.env.TEST_CROSS_PROGRAM_SLUG;
 const crossEpisodeGuid = process.env.TEST_CROSS_EPISODE_GUID;
 
-if (authCookie) {
+const isolationFixtures = {
+  TEST_AUTH_COOKIE_A: cookieA,
+  TEST_CSRF_TOKEN_A: csrfA,
+  TEST_AUTH_COOKIE_B: cookieB,
+  TEST_CSRF_TOKEN_B: csrfB,
+  TEST_CROSS_PROGRAM_ID: crossProgramId,
+  TEST_CROSS_PROGRAM_SLUG: crossProgramSlug,
+  TEST_CROSS_EPISODE_GUID: crossEpisodeGuid,
+};
+const missingIsolationFixtures = Object.entries(isolationFixtures)
+  .filter(([, value]) => !value)
+  .map(([name]) => name);
+
+if (testMode === 'full' && missingIsolationFixtures.length)
+  throw new Error(
+    `TEST_MODE=full exige fixtures de isolamento: ${missingIsolationFixtures.join(', ')}`,
+  );
+
+if (testMode !== 'anonymous') {
   await expectStatus(
     'sessão sem CSRF',
     await fetch(`${baseUrl}/api/programs`, {
@@ -229,15 +267,7 @@ if (authCookie) {
   );
 }
 
-if (
-  cookieA &&
-  csrfA &&
-  cookieB &&
-  csrfB &&
-  crossProgramId &&
-  crossProgramSlug &&
-  crossEpisodeGuid
-) {
+if (testMode === 'full') {
   const headersA = authHeaders(cookieA, csrfA);
   const headersB = authHeaders(cookieB, csrfB);
   await expectStatus(
@@ -260,6 +290,14 @@ if (
       'program GET',
       `/api/programs?slug=${encodeURIComponent(crossProgramSlug)}`,
       {},
+    ],
+    [
+      'program PATCH',
+      `/api/programs/${crossProgramId}`,
+      {
+        method: 'PATCH',
+        headers: { ...headersB, 'content-type': 'multipart/form-data' },
+      },
     ],
     [
       'episode POST',
