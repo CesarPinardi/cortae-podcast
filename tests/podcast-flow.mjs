@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { createServer } from 'node:http';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { cp, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -127,6 +127,7 @@ function startWorker(args, options) {
 async function waitForWorker(baseUrl, worker) {
   const deadline = Date.now() + 30_000;
   let lastError = 'sem resposta';
+  let readyResponses = 0;
   while (Date.now() < deadline) {
     if (worker.child.exitCode !== null)
       throw new Error(
@@ -134,12 +135,18 @@ async function waitForWorker(baseUrl, worker) {
       );
     try {
       const response = await fetch(`${baseUrl}/api/auth/session`);
-      if (response.status === 200) return;
-      lastError = `HTTP ${response.status}`;
+      if (response.status === 200) {
+        readyResponses += 1;
+        if (readyResponses >= 3) return;
+      } else {
+        readyResponses = 0;
+        lastError = `HTTP ${response.status}`;
+      }
     } catch (error) {
+      readyResponses = 0;
       lastError = error instanceof Error ? error.message : String(error);
     }
-    await new Promise((resolveWait) => setTimeout(resolveWait, 100));
+    await new Promise((resolveWait) => setTimeout(resolveWait, 250));
   }
   throw new Error(`Worker não iniciou: ${lastError}.\n${worker.output()}`);
 }
@@ -187,7 +194,7 @@ async function readJson(response, label) {
   return parsed;
 }
 
-function createClient(baseUrl) {
+function createClient(baseUrl, recoverWorker, workerOutput) {
   const cookies = new Map();
   let csrfToken = '';
 
@@ -202,24 +209,37 @@ function createClient(baseUrl) {
     }
   }
 
-  async function request(path, init = {}, csrf = false) {
-    const headers = new Headers(init.headers);
-    const cookie = [...cookies]
-      .map(([name, value]) => `${name}=${value}`)
-      .join('; ');
-    if (cookie) headers.set('cookie', cookie);
-    if (csrf) {
-      assert.ok(csrfToken, 'cliente autenticado sem token CSRF');
-      headers.set('x-csrf-token', csrfToken);
+  async function request(
+    path,
+    init = {},
+    csrf = false,
+    retryWorkerRestart = false,
+  ) {
+    for (let attempt = 0; ; attempt += 1) {
+      const headers = new Headers(init.headers);
+      const cookie = [...cookies]
+        .map(([name, value]) => `${name}=${value}`)
+        .join('; ');
+      if (cookie) headers.set('cookie', cookie);
+      if (csrf) {
+        assert.ok(csrfToken, 'cliente autenticado sem token CSRF');
+        headers.set('x-csrf-token', csrfToken);
+      }
+      const url = path.startsWith('http') ? path : `${baseUrl}${path}`;
+      const response = await fetch(url, {
+        ...init,
+        headers,
+        redirect: 'manual',
+      });
+      storeCookies(response);
+      if (!retryWorkerRestart || response.status !== 503) return response;
+      const body = await response.clone().text();
+      if (!body.includes('worker restarted mid-request') || attempt >= 2)
+        throw new Error(
+          `Worker reiniciou durante ${init.method ?? 'GET'} ${path}.\n${workerOutput()}`,
+        );
+      await recoverWorker();
     }
-    const url = path.startsWith('http') ? path : `${baseUrl}${path}`;
-    const response = await fetch(url, {
-      ...init,
-      headers,
-      redirect: 'manual',
-    });
-    storeCookies(response);
-    return response;
   }
 
   async function login() {
@@ -406,12 +426,21 @@ async function runFlow(mockBaseUrl, tempDir) {
   );
   assert.equal(migration.code, 0, `migrações D1 falharam: ${migration.output}`);
 
+  const stableDist = join(tempDir, 'dist');
+  await cp(resolve(REPO_ROOT, 'dist'), stableDist, { recursive: true });
+  await cp(resolve(REPO_ROOT, 'migrations'), join(tempDir, 'migrations'), {
+    recursive: true,
+  });
+  const stableConfigPath = join(stableDist, 'server', 'wrangler.json');
+  await readFile(stableConfigPath);
+
   const worker = startWorker(
     [
       'dev',
       '--local',
+      '--no-bundle',
       '--config',
-      CONFIG_PATH,
+      stableConfigPath,
       '--persist-to',
       tempDir,
       '--ip',
@@ -428,10 +457,12 @@ async function runFlow(mockBaseUrl, tempDir) {
   );
   try {
     await waitForWorker(workerBaseUrl, worker);
-    const visitor = createClient(workerBaseUrl);
+    const recoverWorker = () => waitForWorker(workerBaseUrl, worker);
+    const workerOutput = () => worker.output();
+    const visitor = createClient(workerBaseUrl, recoverWorker, workerOutput);
     await anonymousFlow(visitor);
 
-    const clientA = createClient(workerBaseUrl);
+    const clientA = createClient(workerBaseUrl, recoverWorker, workerOutput);
     const sessionA = await clientA.login();
     assert.equal(sessionA.user.email, 'owner-a@example.com');
     assert.equal(sessionA.channel.channelId, 'channel-a');
@@ -611,7 +642,7 @@ async function runFlow(mockBaseUrl, tempDir) {
     );
     console.log('Fluxo autenticado A e feed público passaram.');
 
-    const clientB = createClient(workerBaseUrl);
+    const clientB = createClient(workerBaseUrl, recoverWorker, workerOutput);
     const sessionB = await clientB.login();
     assert.equal(sessionB.user.email, 'owner-b@example.com');
     assert.equal(sessionB.channel.channelId, 'channel-b');
@@ -729,7 +760,9 @@ async function runFlow(mockBaseUrl, tempDir) {
     for (const [label, path, init, csrf] of crossRoutes)
       await expectStatus(
         `sessão B não acessa ${label}`,
-        await clientB.request(path, init, csrf),
+        // These requests fail ownership checks before any mutation; retry only
+        // transient local Worker restarts, never the authenticated happy path.
+        await clientB.request(path, init, csrf, true),
         404,
       );
     console.log('Isolamento A/B passou, incluindo PATCH de programa.');
